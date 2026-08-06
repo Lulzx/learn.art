@@ -183,4 +183,63 @@ suite "deterministic mini-batch training" [
         assert -> badEpochs?
         assert -> badInputs?
     ]
+
+    test "measures and clips the global parameter gradient norm" [
+        left: parameter 0.0
+        right: parameter 0.0
+        left\gradient: tensor [3.0]
+        right\gradient: tensor [4.0]
+        before: clipGradNorm.max: 2.5 @[left right]
+        after: gradientNorm @[left right]
+        assert -> 5.0 = before
+        assert -> 2.5 = after
+        assert -> 1.5 = left\gradient\data\0
+        assert -> 2.0 = right\gradient\data\0
+    ]
+
+    test "applies clipping and an epoch learning-rate schedule in train" [
+        features: tensor [1.0]
+        targets: tensor [100.0]
+        model: graph [
+            x: input
+            y: input
+            weight: parameter 0.0
+            prediction: x * weight
+            error: prediction - y
+            loss: mean square error
+        ]
+        optimizer: sgd.rate: 0.1 (parameters model)
+        scheduler: stepLr.every: 2.factor: 0.5 optimizer
+        iterator: batcher.size: 1.shuffle: false features targets
+        history: train.epochs: 3.clip: 1.0.scheduler: scheduler model optimizer iterator
+        assert -> "0.15" = history\version
+        assert -> 0.1 = history\epochs\0\learningRate
+        assert -> 0.1 = history\epochs\1\learningRate
+        assert -> 0.05 = history\epochs\2\learningRate
+        assert -> 0.05 = optimizer\rate
+        assert -> 3 = scheduler\epochs
+        assert -> model\weight\value\data\0 < 0.3
+    ]
+
+    test "round-trips scheduler progress in a session checkpoint" [
+        features: tensor [1.0 2.0]
+        targets: tensor [2.0 4.0]
+        model: graph [p: parameter 1.0]
+        optimizer: momentum.rate: 0.2 (parameters model)
+        scheduler: stepLr.every: 2.factor: 0.5 optimizer
+        iterator: batcher.size: 1.seed: 3 features targets
+        discard schedulerStep scheduler
+        discard schedulerStep scheduler
+        discard nextBatch iterator
+        path: ".learn-scheduler-checkpoint-test.state"
+        saveSessionCheckpoint.scheduler: scheduler model optimizer iterator path
+
+        optimizer\rate: 9.0
+        scheduler\epochs: 9
+        iterator\position: 0
+        loadSessionCheckpoint.scheduler: scheduler model optimizer iterator path
+        assert -> 0.1 = optimizer\rate
+        assert -> 2 = scheduler\epochs
+        assert -> 1 = iterator\position
+    ]
 ]

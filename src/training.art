@@ -6,6 +6,88 @@ define :learnBatcher [
     init: constructor [features targets batchSize shuffle seed epoch position order]
 ]
 
+define :learnStepLr [
+    init: constructor [optimizer factor every epochs]
+]
+
+gradientNorm: function [parameterList][
+    unless block? parameterList -> panic "learn: gradientNorm expects a parameter block"
+    squaredTotal: 0.0
+    loop parameterList 'item [
+        unless and? [is? :learnValue item][item\parameter] -> panic "learn: gradientNorm expects parameter values"
+        if null? item\gradient -> panic "learn: cannot measure a parameter without a gradient"
+        loop item\gradient\data 'component -> squaredTotal: squaredTotal + (component * component)
+    ]
+    return squaredTotal ^ 0.5
+]
+
+clipGradNorm: function [parameterList][
+    maximum: attr 'max
+    unless and? [lrNumeric? maximum][maximum > 0.0] -> panic "learn: clipGradNorm.max must be positive"
+    norm: gradientNorm parameterList
+    if norm > maximum [
+        scale: maximum / norm
+        loop parameterList 'item -> item\gradient: lrTensorBinary item\gradient scale 'mul
+    ]
+    return norm
+]
+
+stepLr: function [optimizer][
+    callAttrs: attrs
+    factor: 0.1
+    every: 10
+    if key? callAttrs 'factor -> factor: callAttrs\factor
+    if key? callAttrs 'every -> every: callAttrs\every
+    unless or? [is? :learnSgd optimizer][or? [is? :learnMomentum optimizer][is? :learnAdam optimizer]] -> panic "learn: stepLr expects an optimizer"
+    unless and? [lrNumeric? factor][factor > 0.0] -> panic "learn: stepLr.factor must be positive"
+    unless and? [integer? every][every > 0] -> panic "learn: stepLr.every must be a positive integer"
+    args: lrArgs 4
+    set args 0 optimizer
+    set args 1 to :floating factor
+    set args 2 every
+    set args 3 0
+    return to :learnStepLr args
+]
+
+schedulerStep: function [scheduler][
+    unless is? :learnStepLr scheduler -> panic "learn: schedulerStep expects a learning-rate scheduler"
+    scheduler\epochs: scheduler\epochs + 1
+    if (scheduler\epochs % scheduler\every) = 0 -> scheduler\optimizer\rate: scheduler\optimizer\rate * scheduler\factor
+    return scheduler\optimizer\rate
+]
+
+schedulerState: function [scheduler][
+    unless is? :learnStepLr scheduler -> panic "learn: schedulerState expects a learning-rate scheduler"
+    return #[format: "learn.scheduler-state" version: "0.15" kind: 'step factor: scheduler\factor every: scheduler\every epochs: scheduler\epochs rate: scheduler\optimizer\rate]
+]
+
+lrValidateSchedulerState: function [scheduler state][
+    unless is? :learnStepLr scheduler -> panic "learn: scheduler state expects a learning-rate scheduler"
+    unless and? [dictionary? state][and? [key? state 'format][state\format = "learn.scheduler-state"]] -> panic "learn: unsupported scheduler state format"
+    unless and? [key? state 'version][state\version = "0.15"] -> panic "learn: unsupported scheduler state version"
+    unless and? [key? state 'kind][state\kind = 'step] -> panic "learn: unsupported scheduler state kind"
+    loop ['factor 'every 'epochs 'rate] 'field [unless key? state field -> panic ~"learn: scheduler state is missing |field|"]
+    unless state\factor = scheduler\factor -> panic "learn: scheduler state factor does not match"
+    unless state\every = scheduler\every -> panic "learn: scheduler state interval does not match"
+    unless and? [integer? state\epochs][state\epochs >= 0] -> panic "learn: scheduler state epoch count is invalid"
+    unless and? [lrNumeric? state\rate][state\rate > 0.0] -> panic "learn: scheduler state rate is invalid"
+    return state
+]
+
+loadSchedulerState: function [scheduler state][
+    valid: lrValidateSchedulerState scheduler state
+    scheduler\epochs: valid\epochs
+    scheduler\optimizer\rate: to :floating valid\rate
+    return scheduler
+]
+
+lrSchedulerCheckpointPayload: function [state][@[state\factor state\every state\epochs state\rate]]
+
+lrSchedulerStateFromPayload: function [payload][
+    unless and? [block? payload][(size payload) = 4] -> panic "learn: malformed scheduler checkpoint payload"
+    return #[format: "learn.scheduler-state" version: "0.15" kind: 'step factor: payload\0 every: payload\1 epochs: payload\2 rate: payload\3]
+]
+
 lrDatasetRows: function [value label][
     source: lrAsTensor value
     if empty? source\shape -> panic ~"learn: |label| must have a row dimension"
@@ -151,27 +233,47 @@ lrBatcherStateFromPayload: function [payload][
 ]
 
 saveSessionCheckpoint: function [model optimizer iterator path][
+    callAttrs: attrs
     modelPayload: lrModelCheckpointPayload stateDict model
     optimizerPayload: lrOptimizerCheckpointPayload optimizerState optimizer
     batcherPayload: lrBatcherCheckpointPayload batcherState iterator
     payload: @[10013 modelPayload optimizerPayload batcherPayload]
+    if key? callAttrs 'scheduler [
+        unless is? :learnStepLr callAttrs\scheduler -> panic "learn: checkpoint scheduler must be a learning-rate scheduler"
+        unless same? callAttrs\scheduler\optimizer optimizer -> panic "learn: checkpoint scheduler belongs to a different optimizer"
+        savedSchedulerState: schedulerState callAttrs\scheduler
+        schedulerPayload: lrSchedulerCheckpointPayload savedSchedulerState
+        payload: @[10015 modelPayload optimizerPayload batcherPayload schedulerPayload]
+    ]
     write (to :string payload) path
     return path
 ]
 
 loadSessionCheckpoint: function [model optimizer iterator path][
+    callAttrs: attrs
     payload: parse read path
-    unless and? [block? payload][(size payload) = 4] -> panic "learn: malformed session checkpoint payload"
-    unless payload\0 = 10013 -> panic "learn: unsupported session checkpoint header"
+    unless and? [block? payload][not? empty? payload] -> panic "learn: malformed session checkpoint payload"
+    unless contains? [10013 10015] payload\0 -> panic "learn: unsupported session checkpoint header"
+    expectedSize: (payload\0 = 10015)? -> 5 -> 4
+    unless (size payload) = expectedSize -> panic "learn: malformed session checkpoint payload"
     modelState: lrStateFromCheckpointPayload payload\1
     optimizerStateValue: lrOptimizerStateFromCheckpointPayload payload\2 (size optimizer\parameterList)
     batcherStateValue: lrBatcherStateFromPayload payload\3
     validatedModel: lrValidateState model modelState true
     validatedOptimizer: lrValidateOptimizerState optimizer optimizerStateValue
     validatedBatcher: lrValidateBatcherState iterator batcherStateValue
+    validatedScheduler: null
+    if payload\0 = 10015 [
+        unless key? callAttrs 'scheduler -> panic "learn: scheduler checkpoint requires loadSessionCheckpoint.scheduler"
+        unless is? :learnStepLr callAttrs\scheduler -> panic "learn: checkpoint scheduler must be a learning-rate scheduler"
+        unless same? callAttrs\scheduler\optimizer optimizer -> panic "learn: checkpoint scheduler belongs to a different optimizer"
+        schedulerStateValue: lrSchedulerStateFromPayload payload\4
+        validatedScheduler: lrValidateSchedulerState callAttrs\scheduler schedulerStateValue
+    ]
     lrApplyValidatedState validatedModel
     lrApplyValidatedOptimizerState validatedOptimizer
     loadBatcherState iterator validatedBatcher
+    unless null? validatedScheduler -> loadSchedulerState callAttrs\scheduler validatedScheduler
     return model
 ]
 
@@ -228,11 +330,15 @@ train: function [model optimizer iterator][
     lossName: 'loss
     validation: null
     callbackName: null
+    clipMaximum: null
+    scheduler: null
     if key? callAttrs 'epochs -> epochs: callAttrs\epochs
     if key? callAttrs 'inputs -> inputNames: callAttrs\inputs
     if key? callAttrs 'loss -> lossName: to :literal callAttrs\loss
     if key? callAttrs 'validation -> validation: callAttrs\validation
     if key? callAttrs 'callback -> callbackName: callAttrs\callback
+    if key? callAttrs 'clip -> clipMaximum: callAttrs\clip
+    if key? callAttrs 'scheduler -> scheduler: callAttrs\scheduler
 
     unless is? :learnGraph model -> panic "learn: train expects a graph"
     unless or? [is? :learnSgd optimizer][or? [is? :learnMomentum optimizer][is? :learnAdam optimizer]] -> panic "learn: train expects an optimizer"
@@ -240,6 +346,11 @@ train: function [model optimizer iterator][
     unless and? [integer? epochs][epochs > 0] -> panic "learn: train.epochs must be a positive integer"
     names: lrValidateTrainingNames model inputNames lossName
     unless null? callbackName [unless literal? callbackName -> panic "learn: train.callback must be a function name literal"]
+    unless null? clipMaximum [unless and? [lrNumeric? clipMaximum][clipMaximum > 0.0] -> panic "learn: train.clip must be positive"]
+    unless null? scheduler [
+        unless is? :learnStepLr scheduler -> panic "learn: train.scheduler must be a learning-rate scheduler"
+        unless same? scheduler\optimizer optimizer -> panic "learn: training scheduler belongs to a different optimizer"
+    ]
 
     records: lrFreshBlock
     totalBatches: 0
@@ -260,12 +371,14 @@ train: function [model optimizer iterator][
         epochRows: 0
         epochBatches: 0
         epochNumber: iterator\epoch
+        epochRate: optimizer\rate
         while [iterator\position < rows][
             batch: nextBatch iterator
             feed: lrTrainingFeed names batch
             zeroGrad model
             forward.with: feed model
             backward model\values\[lossName]
+            unless null? clipMaximum -> clipGradNorm.max: clipMaximum optimizer\parameterList
             step optimizer
             batchRows: size batch\indices
             batchLoss: lrTrainingLoss model lossName
@@ -277,12 +390,13 @@ train: function [model optimizer iterator][
         meanLoss: epochLoss / epochRows
         validationLoss: null
         unless null? validation -> validationLoss: lrValidationLoss model validation names lossName iterator\batchSize
-        record: #[epoch: epochNumber trainLoss: meanLoss validationLoss: validationLoss batches: epochBatches rows: epochRows partial: partialEpoch]
+        record: #[epoch: epochNumber trainLoss: meanLoss validationLoss: validationLoss learningRate: epochRate batches: epochBatches rows: epochRows partial: partialEpoch]
         'records ++ @[record]
         completed: completed + 1
         iterator\epoch: iterator\epoch + 1
         iterator\position: 0
         iterator\order: lrBatchOrder rows iterator\seed iterator\epoch iterator\shuffle
+        unless null? scheduler -> schedulerStep scheduler
 
         unless null? callbackName [
             shouldContinue: call callbackName @[record]
@@ -295,5 +409,5 @@ train: function [model optimizer iterator][
         ]
     ]
 
-    return #[format: "learn.training-history" version: "0.14" epochs: records batches: totalBatches stoppedEarly: stoppedEarly stopReason: stopReason]
+    return #[format: "learn.training-history" version: "0.15" epochs: records batches: totalBatches stoppedEarly: stoppedEarly stopReason: stopReason]
 ]

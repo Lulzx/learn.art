@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.14 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, resumable high-level training, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.15 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable high-level training, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -63,6 +63,8 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 `batcher.size:.seed:` creates a deterministic paired feature/target iterator. `nextBatch` returns owned batch tensors, original row indices, and the current epoch. `batcherState` restores the exact permutation and cursor, while `saveSessionCheckpoint` and `loadSessionCheckpoint` atomically combine model, optimizer, and data-order state.
 
 `train.epochs:` consumes that iterator and returns `learn.training-history` with weighted training loss, validation loss, batch counts, and partial-epoch metadata. Use `train.inputs: ['features 'labels]` and `train.loss: 'objective` for custom graph names, `train.validation: #[features: xValid targets: yValid]` for validation passes, and `train.callback: 'functionName` to stop when an epoch callback returns `false`. A completed epoch leaves the batcher positioned at the start of the next epoch, so session checkpoints remain directly resumable.
+
+`gradientNorm` measures the global L2 norm across parameter gradients, and `clipGradNorm.max:` rescales them in place when that norm exceeds the limit. `stepLr.every:.factor:` creates an epoch scheduler; pass it with `train.scheduler:` and optionally enable clipping with `train.clip:`. `schedulerState` and `loadSchedulerState` expose ordinary state dictionaries. Supplying the scheduler to `saveSessionCheckpoint.scheduler:` and `loadSessionCheckpoint.scheduler:` extends the atomic session checkpoint to its progress and current optimizer rate.
 
 ## Regression API
 

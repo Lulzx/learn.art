@@ -14,7 +14,8 @@
 - v0.12: optimizer state and atomic model-plus-optimizer training checkpoints.
 - v0.13: deterministic paired mini-batches and fully resumable training-session checkpoints.
 - v0.14: resumable high-level training with named feeds, validation, history, and callback stopping.
+- v0.15: global gradient clipping and checkpointable epoch learning-rate schedules.
 
 ## Next
 
-The next coherent milestone is training control: gradient clipping and learning-rate schedules that compose with the high-level loop and survive checkpoints.
+The next coherent milestone is reusable preprocessing: fitted normalization, deterministic transform pipelines, and portable transform state for train/predict parity.

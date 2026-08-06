@@ -15,9 +15,10 @@ model: graph [
 ]
 
 optimizer: sgd.rate: 0.05 (parameters model)
+scheduler: stepLr.every: 50.factor: 0.8 optimizer
 iterator: batcher.size: 2.seed: 7 xTrain yTrain
 validation: #[features: xTrain targets: yTrain]
-history: train.epochs: 100.validation: validation model optimizer iterator
+history: train.epochs: 100.validation: validation.clip: 10.0.scheduler: scheduler model optimizer iterator
 
 print ~"w = |model\w|"
 print ~"b = |model\b|"

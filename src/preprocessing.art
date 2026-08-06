@@ -51,7 +51,11 @@ standardScaler: function [values][
     set args 1 means
     set args 2 scales
     set args 3 source\device
-    return to :learnStandardScaler args
+    result: to :learnStandardScaler args
+    set result 'featureShape new featureShape
+    set result 'mean new means
+    set result 'scale new scales
+    return result
 ]
 
 transformPipeline: function [steps][
@@ -63,7 +67,9 @@ transformPipeline: function [steps][
     ]
     args: lrArgs 1
     set args 0 owned
-    return to :learnTransformPipeline args
+    result: to :learnTransformPipeline args
+    set result 'steps new owned
+    return result
 ]
 
 lrValidatePreprocessorInput: function [scaler source][
@@ -150,7 +156,11 @@ lrStandardScalerFromState: function [state][
     set args 1 means
     set args 2 scales
     set args 3 device
-    return to :learnStandardScaler args
+    result: to :learnStandardScaler args
+    set result 'featureShape new state\featureShape
+    set result 'mean new means
+    set result 'scale new scales
+    return result
 ]
 
 preprocessorFromState: function [state][

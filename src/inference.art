@@ -1,0 +1,192 @@
+; Immutable executable inference snapshots and a tagged data-only codec.
+
+import relative {./preprocessing}!
+import relative {./transform}!
+
+define :learnInferenceArtifact [
+    init: constructor [schedule preprocessor inputName]
+]
+
+lrEncodePortableText: function [value][
+    source: to :string value
+    codes: lrFreshBlock
+    if not? empty? source [loop 0..((size source) - 1) 'charIndex -> 'codes ++ to :integer source\[charIndex]]
+    return codes
+]
+
+lrDecodePortableText: function [codes][
+    unless block? codes -> panic "learn: malformed portable text"
+    characters: lrFreshBlock
+    loop codes 'code [
+        unless and? [integer? code][code >= 0] -> panic "learn: malformed portable character"
+        'characters ++ to :char code
+    ]
+    return join characters
+]
+
+lrEncodePortable: function [value][
+    if null? value -> return @[0]
+    if logical? value -> return @[1 ((value)? -> 1 -> 0)]
+    if integer? value -> return @[2 value]
+    if floating? value -> return @[3 value]
+    if string? value -> return @[4 lrEncodePortableText value]
+    if literal? value -> return @[5 lrEncodePortableText value]
+    if block? value [
+        items: lrFreshBlock
+        loop value 'item [
+            encoded: lrEncodePortable item
+            'items ++ @[encoded]
+        ]
+        return @[6 items]
+    ]
+    if dictionary? value [
+        rows: lrFreshBlock
+        loop keys value 'key [
+            encodedValue: lrEncodePortable value\[key]
+            'rows ++ @[@[lrEncodePortableText key encodedValue]]
+        ]
+        return @[7 rows]
+    ]
+    panic ~"learn: inference state cannot encode |type value|"
+]
+
+lrDecodePortable: function [encoded][
+    unless and? [block? encoded][not? empty? encoded] -> panic "learn: malformed portable inference value"
+    tag: encoded\0
+    unless and? [integer? tag][and? [tag >= 0][tag =< 7]] -> panic "learn: unknown portable inference tag"
+    if tag = 0 [
+        unless (size encoded) = 1 -> panic "learn: malformed portable null"
+        return null
+    ]
+    unless (size encoded) = 2 -> panic "learn: malformed portable inference value"
+    payload: encoded\1
+    if tag = 1 [
+        unless contains? [0 1] payload -> panic "learn: malformed portable logical"
+        return payload = 1
+    ]
+    if tag = 2 [unless integer? payload -> panic "learn: malformed portable integer" return payload]
+    if tag = 3 [unless lrNumeric? payload -> panic "learn: malformed portable floating value" return to :floating payload]
+    if tag = 4 [return lrDecodePortableText payload]
+    if tag = 5 [return to :literal lrDecodePortableText payload]
+    if tag = 6 [
+        unless block? payload -> panic "learn: malformed portable block"
+        result: lrFreshBlock
+        loop payload 'item [
+            decoded: lrDecodePortable item
+            'result ++ @[decoded]
+        ]
+        return result
+    ]
+    unless block? payload -> panic "learn: malformed portable dictionary"
+    result: lrFreshDictionary
+    loop payload 'row [
+        unless and? [block? row][(size row) = 2] -> panic "learn: malformed portable dictionary row"
+        key: to :literal lrDecodePortableText row\0
+        if key? result key -> panic ~"learn: duplicate portable dictionary key |key|"
+        decoded: lrDecodePortable row\1
+        set result key decoded
+    ]
+    return result
+]
+
+compileInference: function [model outputName][
+    callAttrs: attrs
+    unless is? :learnGraph model -> panic "learn: compileInference expects a graph"
+    output: to :literal outputName
+    preprocessor: null
+    inputName: null
+    if key? callAttrs 'preprocessor -> preprocessor: callAttrs\preprocessor
+    if key? callAttrs 'input -> inputName: to :literal callAttrs\input
+    wasTraining: trainingMode? model
+    evalMode model
+    data: graphData model
+    if wasTraining -> trainMode model
+    schedule: scheduleGraph data output
+
+    unless null? preprocessor [
+        capturedPreprocessorState: preprocessorState preprocessor
+        preprocessor: preprocessorFromState capturedPreprocessorState
+        if null? inputName [
+            if empty? schedule\graph\inputs -> panic "learn: inference preprocessing requires an input"
+            inputName: schedule\graph\inputs\0
+        ]
+        unless contains? schedule\graph\inputs inputName -> panic ~"learn: inference graph has no input named |inputName|"
+    ]
+    if null? preprocessor [unless null? inputName -> panic "learn: compileInference.input requires a preprocessor"]
+
+    args: lrArgs 3
+    set args 0 schedule
+    set args 1 preprocessor
+    set args 2 inputName
+    return to :learnInferenceArtifact args
+]
+
+runInference: function [artifact][
+    callAttrs: attrs
+    unless is? :learnInferenceArtifact artifact -> panic "learn: runInference expects an inference artifact"
+    unless key? callAttrs 'with -> panic "learn: runInference.with requires input feeds"
+    supplied: callAttrs\with
+    unless dictionary? supplied -> panic "learn: runInference.with expects a dictionary"
+    feeds: lrFreshDictionary
+    loop keys supplied 'name -> set feeds name supplied\[name]
+    unless null? artifact\preprocessor [
+        unless key? feeds artifact\inputName -> panic ~"learn: inference feed is missing preprocessed input |artifact\inputName|"
+        transformed: applyTransform artifact\preprocessor feeds\[artifact\inputName]
+        set feeds artifact\inputName transformed
+    ]
+    return executeCpu.with: feeds artifact\schedule
+]
+
+inferenceState: function [artifact][
+    unless is? :learnInferenceArtifact artifact -> panic "learn: inferenceState expects an inference artifact"
+    encodedGraph: lrEncodePortable artifact\schedule\graph
+    graphCopy: lrDecodePortable encodedGraph
+    preprocessing: null
+    unless null? artifact\preprocessor -> preprocessing: preprocessorState artifact\preprocessor
+    return #[
+        format: "learn.inference-state" version: "0.22"
+        output: artifact\schedule\output
+        graph: graphCopy
+        preprocessing: preprocessing
+        input: artifact\inputName
+    ]
+]
+
+lrInferenceFromState: function [state][
+    unless and? [dictionary? state][and? [key? state 'format][state\format = "learn.inference-state"]] -> panic "learn: unsupported inference state format"
+    unless and? [key? state 'version][state\version = "0.22"] -> panic "learn: unsupported inference state version"
+    loop ['output 'graph 'preprocessing 'input] 'field [unless key? state field -> panic ~"learn: inference state is missing |field|"]
+    unless dictionary? state\graph -> panic "learn: inference graph state is invalid"
+    output: to :literal state\output
+    schedule: scheduleGraph state\graph output
+    preprocessor: null
+    inputName: null
+    unless null? state\preprocessing [
+        preprocessor: preprocessorFromState state\preprocessing
+        unless null? state\input -> inputName: to :literal state\input
+        if null? inputName -> panic "learn: inference preprocessing state is missing its input"
+        unless contains? schedule\graph\inputs inputName -> panic ~"learn: inference graph has no preprocessing input |inputName|"
+    ]
+    if null? preprocessor [unless null? state\input -> panic "learn: inference input requires preprocessing state"]
+    args: lrArgs 3
+    set args 0 schedule
+    set args 1 preprocessor
+    set args 2 inputName
+    return to :learnInferenceArtifact args
+]
+
+saveInference: function [artifact path][
+    state: inferenceState artifact
+    encoded: lrEncodePortable state
+    payload: @[10022 encoded]
+    write (to :string payload) path
+    return path
+]
+
+loadInference: function [path][
+    payload: parse read path
+    unless and? [block? payload][(size payload) = 2] -> panic "learn: malformed inference artifact payload"
+    unless payload\0 = 10022 -> panic "learn: unsupported inference artifact header"
+    state: lrDecodePortable payload\1
+    return lrInferenceFromState state
+]

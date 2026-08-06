@@ -5,3 +5,4 @@ import relative {./transform}!
 import relative {./training}!
 import relative {./preprocessing}!
 import relative {./metrics}!
+import relative {./inference}!

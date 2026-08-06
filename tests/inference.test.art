@@ -1,0 +1,90 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "portable inference artifacts" [
+    test "captures an immutable model and preprocessing snapshot" [
+        trainingFeatures: tensor [[1.0] [2.0] [3.0]]
+        scaler: standardScaler trainingFeatures
+        model: graph [
+            x: inputShape [1 1]
+            weight: parameter 2.0
+            prediction: x * weight
+        ]
+        artifact: compileInference.preprocessor: scaler.input: 'x model 'prediction
+        raw: tensor [[4.0]]
+        expected: runInference.with: #[x: raw] artifact
+        model\weight\value\data: [10.0]
+        set scaler\mean 0 99.0
+        actual: runInference.with: #[x: raw] artifact
+        assert -> expected\data = actual\data
+        assert -> (abs actual\data\0 - 4.898979485566356) < 0.000000001
+    ]
+
+    test "prunes training-only inputs from inference" [
+        model: graph [
+            x: input
+            y: input
+            weight: parameter 3.0
+            prediction: x * weight
+            residual: prediction - y
+            loss: mean square residual
+        ]
+        artifact: compileInference model 'prediction
+        values: tensor [2.0 4.0]
+        result: runInference.with: #[x: values] artifact
+        assert -> ['x] = artifact\schedule\graph\inputs
+        assert -> [6.0 12.0] = result\data
+    ]
+
+    test "compiles dropout in evaluation mode and restores graph mode" [
+        model: graph [x: input dropped: dropout.rate: 0.75.seed: 4 x output: dropped * 2.0]
+        assert -> trainingMode? model
+        artifact: compileInference model 'output
+        values: tensor [1.0 2.0]
+        result: runInference.with: #[x: values] artifact
+        assert -> trainingMode? model
+        assert -> [2.0 4.0] = result\data
+    ]
+
+    test "round-trips a data-only inference file" [
+        model: graph [x: input weight: parameter 2.0 output: x * weight]
+        artifact: compileInference model 'output
+        path: ".learn-inference-test.state"
+        saveInference artifact path
+        loaded: loadInference path
+        values: tensor [3.0 5.0]
+        expected: runInference.with: #[x: values] artifact
+        actual: runInference.with: #[x: values] loaded
+        assert -> expected\shape = actual\shape
+        assert -> expected\data = actual\data
+    ]
+
+    test "exports owned ordinary inference state" [
+        model: graph [x: input weight: parameter 2.0 output: x * weight]
+        artifact: compileInference model 'output
+        state: inferenceState artifact
+        state\graph\nodes\weight\value\data: [99.0]
+        values: tensor [3.0]
+        result: runInference.with: #[x: values] artifact
+        assert -> "learn.inference-state" = state\format
+        assert -> [6.0] = result\data
+    ]
+
+    test "round-trips all portable scalar and container types" [
+        source: #[text: "0.22" name: 'output enabled: true missing: null integer: 3 floating: 2.5 nested: @["x" 'y]]
+        encoded: lrEncodePortable source
+        decoded: lrDecodePortable encoded
+        assert -> source = decoded
+    ]
+
+    test "validates artifact configuration and feeds" [
+        model: graph [x: input output: x * 2.0]
+        inputWithoutPreprocessor?: throws? [compileInference.input: 'x model 'output]
+        artifact: compileInference model 'output
+        missingFeed?: throws? [runInference.with: lrFreshDictionary artifact]
+        malformedCodec?: throws? [lrDecodePortable @[99]]
+        assert -> inputWithoutPreprocessor?
+        assert -> missingFeed?
+        assert -> malformedCodec?
+    ]
+]

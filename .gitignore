@@ -6,6 +6,7 @@
 .learn-preprocessor-test.state
 .learn-dropout-checkpoint-test.state
 .learn-composition-checkpoint-test.state
+.learn-inference-test.state
 native/*.dylib
 native/*.so
 native/*.dll

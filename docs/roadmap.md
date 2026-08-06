@@ -21,7 +21,8 @@
 - v0.19: reusable dense layers, nested parameter discovery, named groups, and resumable selective freezing.
 - v0.20: local seeded Xavier/He/uniform initialization, reset APIs, and repeatable initializer metadata.
 - v0.21: confusion matrices, per-class and macro reports, and mergeable streaming classification meters.
+- v0.22: immutable executable inference snapshots with optional preprocessing and a safe portable artifact codec.
 
 ## Next
 
-The next coherent milestone is portable inference artifacts: graph architecture plus parameter and preprocessing state in one validated, executable package.
+The next coherent milestone is gradient-based explainability: input gradients, saliency maps, and integrated gradients over named graph outputs.

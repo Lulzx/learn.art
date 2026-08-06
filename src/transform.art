@@ -264,7 +264,8 @@ eliminateCommonSubexpressions: function [data][
 ]
 
 optimizeGraph: function [data outputName][
-    folded: constantFold data
+    pruned: deadCodeEliminate data outputName
+    folded: constantFold pruned
     deduplicated: eliminateCommonSubexpressions folded
     return deadCodeEliminate deduplicated outputName
 ]

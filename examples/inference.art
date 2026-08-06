@@ -1,0 +1,22 @@
+import relative {../src/learn}!
+
+trainingFeatures: tensor [[1.0] [2.0] [3.0]]
+scaler: standardScaler trainingFeatures
+
+model: graph [
+    x: inputShape [1 1]
+    weight: parameter 2.0
+    prediction: x * weight
+]
+
+artifact: compileInference.preprocessor: scaler.input: 'x model 'prediction
+path: ".learn-inference-example.state"
+saveInference artifact path
+loaded: loadInference path
+
+rawFeatures: tensor [[4.0] [5.0]]
+result: runInference.with: #[x: rawFeatures] loaded
+print ~"inference result: |result|"
+print ~"artifact inputs: |loaded\schedule\graph\inputs|"
+
+delete path

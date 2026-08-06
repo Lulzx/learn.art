@@ -1,0 +1,27 @@
+import relative {../src/learn}!
+
+features: tensor [[1.0 0.0] [0.0 1.0] [1.0 1.0] [2.0 1.0]]
+targets: tensor [[1.0] [1.0] [2.0] [3.0]]
+
+model: graph [
+    x: inputShape [1 2]
+    y: inputShape [1 1]
+    weight: parameter.random [2 1]
+    dropped: dropout.rate: 0.2.seed: 17 x
+    prediction: matmul dropped weight
+    residual: prediction - y
+    dataLoss: mean square residual
+    penalty: l2Penalty.rate: 0.001 @[weight]
+    loss: dataLoss + penalty
+]
+
+optimizer: adam.rate: 0.05 (parameters model)
+iterator: batcher.size: 2.seed: 9 features targets
+history: train.epochs: 150 model optimizer iterator
+
+evalMode model
+forward.with: #[x: features y: targets] model
+print ~"prediction: |model\prediction|"
+print ~"evaluation loss: |model\loss|"
+print ~"mode is training: |trainingMode? model|"
+print ~"final training record: |last history\epochs|"

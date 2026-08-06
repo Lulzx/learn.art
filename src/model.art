@@ -3,7 +3,7 @@
 import relative {./autograd}!
 
 define :learnGraph [
-    init: constructor [values names parameterList inputList source feeds]
+    init: constructor [values names parameterList inputList source feeds training]
 
     get: method [what][
         if key? this\values what -> return this\values\[what]
@@ -110,7 +110,7 @@ graph: function [body][
         if and? [is? :learnValue item][item\operation = 'input] -> 'inputList ++ @[name]
     ]
 
-    args: lrArgs 6
+    args: lrArgs 7
     set args 0 graphValues
     set args 1 names
     set args 2 parameterList
@@ -118,11 +118,37 @@ graph: function [body][
     set args 4 new body
     graphFeeds: lrFreshDictionary
     set args 5 graphFeeds
+    set args 6 true
     resultGraph: to :learnGraph args
     ; Arturo object construction aliases empty dictionary fields across
     ; instances, so install the per-graph feed store explicitly.
     set resultGraph 'feeds graphFeeds
     return resultGraph
+]
+
+trainMode: function [model][
+    unless is? :learnGraph model -> panic "learn: trainMode expects a graph"
+    model\training: true
+    loop model\names 'name [
+        item: model\values\[name]
+        if and? [is? :learnValue item][item\operation = 'dropout] -> item\context\training: true
+    ]
+    return model
+]
+
+evalMode: function [model][
+    unless is? :learnGraph model -> panic "learn: evalMode expects a graph"
+    model\training: false
+    loop model\names 'name [
+        item: model\values\[name]
+        if and? [is? :learnValue item][item\operation = 'dropout] -> item\context\training: false
+    ]
+    return model
+]
+
+trainingMode?: function [model][
+    unless is? :learnGraph model -> panic "learn: trainingMode? expects a graph"
+    return model\training
 ]
 
 inputs: function [model][
@@ -159,9 +185,18 @@ forward: function [model][
         unless key? model\feeds name -> panic ~"learn: input |name| has not been provided"
     ]
 
+    recomputed: lrFreshBlock
     loop model\names 'name [
         item: model\values\[name]
-        if is? :learnValue item -> forwardValue item
+        if is? :learnValue item [
+            topoOrder: lrTopo item
+            loop topoOrder 'node [
+                unless lrContainsIdentity? recomputed node [
+                    lrForwardNode node
+                    'recomputed ++ @[node]
+                ]
+            ]
+        ]
     ]
     return model
 ]
@@ -208,13 +243,15 @@ lrGraphNodeData: function [model name][
         unless null? parentName -> 'parentData ++ @[parentName]
     ]
 
+    contextData: item\context
+    if item\operation = 'dropout -> contextData: #[rate: item\context\rate seed: item\context\seed pass: item\context\pass training: item\context\training]
     return #[
         role: role
         operation: item\operation
         shape: new item\value\shape
         device: item\value\device
         parents: parentData
-        context: item\context
+        context: contextData
         value: (role = 'parameter)? -> lrTensorData item\value -> null
     ]
 ]

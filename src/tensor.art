@@ -336,6 +336,7 @@ lrTensorUnary: function [value operation][
         if operation = 'neg -> result: 0.0 - item
         if operation = 'exp -> result: exp item
         if operation = 'log -> result: ln item
+        if operation = 'abs -> result: abs item
         if operation = 'relu -> result: (item > 0.0)? -> item -> 0.0
         if operation = 'tanh [
             twice: 2.0 * item
@@ -568,6 +569,79 @@ tensorExp: function [value][
 tensorLog: function [value][
     if is? :learnValue value -> return lrValueUnary value 'log
     return lrTensorUnary value 'log
+]
+
+tensorAbs: function [value][
+    if is? :learnValue value -> return lrValueUnary value 'abs
+    return lrTensorUnary value 'abs
+]
+
+lrDropoutTensor: function [value context][
+    source: lrAsTensor value
+    unless context\training [
+        context\mask: lrOnesLike source
+        return lrMakeTensorOn source\shape source\data source\device
+    ]
+    context\pass: context\pass + 1
+    state: context\seed + (context\pass * 104729) + 1
+    scale: 1.0 / (1.0 - context\rate)
+    maskData: lrFreshBlock
+    loop source\data 'item [
+        state: ((state * 1103515245) + 12345) % 2147483648
+        fraction: (to :floating state) / 2147483648.0
+        maskValue: (fraction >= context\rate)? -> scale -> 0.0
+        'maskData ++ maskValue
+    ]
+    mask: lrMakeTensorOn source\shape maskData source\device
+    context\mask: mask
+    return lrTensorBinary source mask 'mul
+]
+
+dropout: function [value][
+    callAttrs: attrs
+    rate: 0.5
+    seed: 0
+    if key? callAttrs 'rate -> rate: callAttrs\rate
+    if key? callAttrs 'seed -> seed: callAttrs\seed
+    unless and? [lrNumeric? rate][and? [rate >= 0.0][rate < 1.0]] -> panic "learn: dropout rate must be in [0, 1)"
+    unless and? [integer? seed][seed >= 0] -> panic "learn: dropout seed must be a non-negative integer"
+    if is? :learnValue value -> return lrValueDropout value (to :floating rate) seed
+    context: #[rate: to :floating rate seed: seed pass: 0 training: true mask: null]
+    return lrDropoutTensor value context
+]
+
+lrValidatePenaltyParameters: function [parameterList label][
+    unless and? [block? parameterList][not? empty? parameterList] -> panic ~"learn: |label| expects a non-empty parameter block"
+    loop parameterList 'item [
+        unless and? [is? :learnValue item][item\parameter] -> panic ~"learn: |label| expects parameter values"
+    ]
+    return parameterList
+]
+
+l1Penalty: function [parameterList][
+    rate: attr 'rate
+    if null? rate -> rate: 1.0
+    unless and? [lrNumeric? rate][rate >= 0.0] -> panic "learn: l1Penalty rate must be non-negative"
+    lrValidatePenaltyParameters parameterList "l1Penalty"
+    total: tensorSum tensorAbs parameterList\0
+    if (size parameterList) > 1 [loop 1..((size parameterList) - 1) 'itemIndex [
+        itemPenalty: tensorSum tensorAbs parameterList\[itemIndex]
+        total: total + itemPenalty
+    ]]
+    return total * rate
+]
+
+l2Penalty: function [parameterList][
+    rate: attr 'rate
+    if null? rate -> rate: 1.0
+    unless and? [lrNumeric? rate][rate >= 0.0] -> panic "learn: l2Penalty rate must be non-negative"
+    lrValidatePenaltyParameters parameterList "l2Penalty"
+    total: tensorSum square parameterList\0
+    if (size parameterList) > 1 [loop 1..((size parameterList) - 1) 'itemIndex [
+        itemPenalty: tensorSum square parameterList\[itemIndex]
+        total: total + itemPenalty
+    ]]
+    return total * rate
 ]
 
 softmax: function [value][

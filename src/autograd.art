@@ -91,6 +91,13 @@ lrValueCrossEntropy: function [logits targets][
     return lrMakeValue #[value: result requiresGradient: scores\requiresGradient operation: 'crossEntropy parents: @[scores labels] parameter: false]
 ]
 
+lrValueDropout: function [value rate seed][
+    source: lrAsValue value
+    context: #[rate: rate seed: seed pass: 0 training: true mask: null]
+    result: lrDropoutTensor source\value context
+    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'dropout parents: @[source] parameter: false context: context]
+]
+
 lrValueReduce: function [value operation requestedAxis][
     source: lrAsValue value
     result: null
@@ -267,11 +274,13 @@ lrForwardNode: function [node][
     ]
     if op = 'exp -> node\value: lrTensorUnary node\parents\0\value 'exp
     if op = 'log -> node\value: lrTensorUnary node\parents\0\value 'log
+    if op = 'abs -> node\value: lrTensorUnary node\parents\0\value 'abs
     if op = 'sigmoid -> node\value: lrTensorUnary node\parents\0\value 'sigmoid
     if op = 'relu -> node\value: lrTensorUnary node\parents\0\value 'relu
     if op = 'tanh -> node\value: lrTensorUnary node\parents\0\value 'tanh
     if op = 'softmax -> node\value: lrTensorSoftmax node\parents\0\value
     if op = 'crossEntropy -> node\value: lrTensorCrossEntropy node\parents\0\value node\parents\1\value
+    if op = 'dropout -> node\value: lrDropoutTensor node\parents\0\value node\context
     if op = 'add -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'add
     if op = 'sub -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'sub
     if op = 'mul -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'mul
@@ -362,6 +371,12 @@ backward: function [output][
             contribution: lrTensorBinary up node\parents\0\value 'div
             lrAccumulate node\parents\0 contribution
         ]
+        if op = 'abs [
+            signData: map node\parents\0\value\data 'item -> (item > 0.0)? -> 1.0 -> (item < 0.0)? -> (0.0 - 1.0) -> 0.0
+            sign: lrMakeTensorOn node\parents\0\value\shape signData node\parents\0\value\device
+            contribution: lrTensorBinary up sign 'mul
+            lrAccumulate node\parents\0 contribution
+        ]
         if op = 'sigmoid [
             one: lrOnesLike node\value
             complement: lrTensorBinary one node\value 'sub
@@ -417,6 +432,10 @@ backward: function [output][
             scale: up\data\0 / samples
             rawContribution: lrMakeTensorOn scores\shape data scores\device
             contribution: lrTensorBinary rawContribution scale 'mul
+            lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'dropout [
+            contribution: lrTensorBinary up node\context\mask 'mul
             lrAccumulate node\parents\0 contribution
         ]
         if op = 'pow [

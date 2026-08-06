@@ -17,7 +17,8 @@
 - v0.15: global gradient clipping and checkpointable epoch learning-rate schedules.
 - v0.16: fitted standardization, reversible transform pipelines, and portable preprocessing state.
 - v0.17: stable softmax and cross entropy, shaped inputs, class prediction, and multiclass accuracy.
+- v0.18: seeded inverted dropout, explicit train/eval mode, resumable regularization state, and L1/L2 penalties.
 
 ## Next
 
-The next coherent milestone is regularization: dropout with explicit train/eval mode and parameter penalties that compose with graph training.
+The next coherent milestone is model composition: reusable layer builders, named parameter groups, and selective freezing for transfer-style training.

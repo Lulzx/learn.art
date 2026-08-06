@@ -1,0 +1,119 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "regularized training" [
+    test "uses seeded inverted dropout and reuses its mask in backward" [
+        sourceTensor: tensor [1.0 1.0 1.0 1.0]
+        source: variable sourceTensor
+        dropped: dropout.rate: 0.5.seed: 7 source
+        loss: tensorSum dropped
+        backward loss
+        grad: gradient source
+        assert -> dropped\value\data = grad\data
+        loop dropped\value\data 'item -> assert -> contains? [0.0 2.0] item
+    ]
+
+    test "switches graph dropout between training and evaluation" [
+        model: graph [
+            x: input
+            dropped: dropout.rate: 0.5.seed: 11 x
+            loss: mean dropped
+        ]
+        values: tensor [1.0 2.0 3.0 4.0]
+        forward.with: #[x: values] model
+        trainingOutput: new model\dropped\value\data
+        evalMode model
+        forward model
+        evaluationOutput: model\dropped\value\data
+        assert -> not? trainingMode? model
+        assert -> values\data = evaluationOutput
+        assert -> not? trainingOutput = evaluationOutput
+        trainMode model
+        assert -> trainingMode? model
+    ]
+
+    test "differentiates L1 and L2 parameter penalties" [
+        minusThree: 0.0 - 3.0
+        raw: tensor @[2.0 minusThree]
+        parameterValue: parameter raw
+        l1: l1Penalty.rate: 0.1 @[parameterValue]
+        backward l1
+        l1Gradient: new parameterValue\gradient\data
+        zeroGrad parameterValue
+        l2: l2Penalty.rate: 0.1 @[parameterValue]
+        backward l2
+        assert -> 0.5 = l1\value\data\0
+        assert -> 0.1 = l1Gradient\0
+        assert -> (0.0 - 0.1) = l1Gradient\1
+        assert -> 1.3 = l2\value\data\0
+        assert -> 0.4 = parameterValue\gradient\data\0
+        assert -> (0.0 - 0.6000000000000001) = parameterValue\gradient\data\1
+    ]
+
+    test "exports dropout context as ordinary graph data" [
+        model: graph [x: input dropped: dropout.seed: 5 x loss: mean dropped]
+        data: graphData model
+        context: data\nodes\dropped\context
+        assert -> dictionary? context
+        assert -> 5 = context\seed
+        assert -> not? key? context 'mask
+    ]
+
+    test "executes evaluation-mode dropout in a CPU schedule" [
+        model: graph [x: input dropped: dropout.rate: 0.75.seed: 3 x loss: mean dropped]
+        evalMode model
+        values: tensor [1.0 3.0]
+        feed: #[x: values]
+        forward.with: feed model
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        scheduled: executeCpu.with: feed schedule
+        assert -> 2.0 = model\loss\value\data\0
+        assert -> 2.0 = scheduled\data\0
+    ]
+
+    test "restores dropout sequence and mode in a session checkpoint" [
+        features: tensor [[1.0 1.0 1.0 1.0] [2.0 2.0 2.0 2.0]]
+        targets: tensor [0.0 0.0]
+        model: graph [
+            x: inputShape [1 4]
+            y: input
+            dropped: dropout.rate: 0.5.seed: 13 x
+            weight: parameter 1.0
+            prediction: dropped * weight
+            residual: prediction - y
+            loss: mean square residual
+        ]
+        optimizer: sgd.rate: 0.01 (parameters model)
+        iterator: batcher.size: 1.shuffle: false features targets
+        firstBatch: nextBatch iterator
+        forward.with: #[x: firstBatch\features y: firstBatch\targets] model
+        path: ".learn-dropout-checkpoint-test.state"
+        saveSessionCheckpoint model optimizer iterator path
+        forward model
+        expected: new model\dropped\value\data
+
+        evalMode model
+        model\dropped\context\pass: 99
+        iterator\position: 0
+        loadSessionCheckpoint model optimizer iterator path
+        forward model
+        assert -> expected = model\dropped\value\data
+        assert -> trainingMode? model
+        assert -> 1 = iterator\position
+    ]
+
+    test "validates regularization configuration" [
+        invalidRate?: throws? [dropout.rate: 1.0 2.0]
+        invalidSeed?: throws? [dropout.seed: (0 - 1) 2.0]
+        emptyPenalty?: throws? [l2Penalty lrFreshBlock]
+        model: graph [x: input dropped: dropout.seed: 2 x loss: mean dropped]
+        state: regularizationState model
+        state\nodes\0\seed: 3
+        mismatchedState?: throws? [loadRegularizationState model state]
+        assert -> invalidRate?
+        assert -> invalidSeed?
+        assert -> emptyPenalty?
+        assert -> mismatchedState?
+    ]
+]

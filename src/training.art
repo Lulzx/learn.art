@@ -88,6 +88,81 @@ lrSchedulerStateFromPayload: function [payload][
     return #[format: "learn.scheduler-state" version: "0.15" kind: 'step factor: payload\0 every: payload\1 epochs: payload\2 rate: payload\3]
 ]
 
+regularizationState: function [model][
+    unless is? :learnGraph model -> panic "learn: regularizationState expects a graph"
+    nodes: lrFreshBlock
+    loop model\names 'name [
+        item: model\values\[name]
+        if and? [is? :learnValue item][item\operation = 'dropout] -> 'nodes ++ @[#[name: name rate: item\context\rate seed: item\context\seed pass: item\context\pass]]
+    ]
+    return #[format: "learn.regularization-state" version: "0.18" training: model\training nodes: nodes]
+]
+
+lrValidateRegularizationState: function [model state][
+    unless is? :learnGraph model -> panic "learn: regularization state expects a graph"
+    unless and? [dictionary? state][and? [key? state 'format][state\format = "learn.regularization-state"]] -> panic "learn: unsupported regularization state format"
+    unless and? [key? state 'version][state\version = "0.18"] -> panic "learn: unsupported regularization state version"
+    unless and? [key? state 'training][logical? state\training] -> panic "learn: regularization mode is invalid"
+    unless and? [key? state 'nodes][block? state\nodes] -> panic "learn: regularization nodes are invalid"
+    liveNodes: lrFreshDictionary
+    loop model\names 'name [
+        item: model\values\[name]
+        if and? [is? :learnValue item][item\operation = 'dropout] -> set liveNodes name item
+    ]
+    unless (size state\nodes) = (size keys liveNodes) -> panic "learn: regularization node count does not match"
+    validated: lrFreshBlock
+    seenNames: lrFreshDictionary
+    loop state\nodes 'entry [
+        unless dictionary? entry -> panic "learn: regularization node state is malformed"
+        loop ['name 'rate 'seed 'pass] 'field [unless key? entry field -> panic ~"learn: regularization node is missing |field|"]
+        name: to :literal entry\name
+        unless key? liveNodes name -> panic ~"learn: graph has no dropout node named |name|"
+        if key? seenNames name -> panic ~"learn: duplicate regularization node |name|"
+        set seenNames name true
+        node: liveNodes\[name]
+        unless entry\rate = node\context\rate -> panic ~"learn: dropout rate for |name| does not match"
+        unless entry\seed = node\context\seed -> panic ~"learn: dropout seed for |name| does not match"
+        unless and? [integer? entry\pass][entry\pass >= 0] -> panic ~"learn: dropout pass for |name| is invalid"
+        'validated ++ @[#[node: node pass: entry\pass]]
+    ]
+    return #[model: model training: state\training nodes: validated]
+]
+
+lrApplyValidatedRegularizationState: function [validated][
+    loop validated\nodes 'entry [
+        entry\node\context\pass: entry\pass
+        entry\node\context\mask: null
+    ]
+    if validated\training -> trainMode validated\model
+    unless validated\training -> evalMode validated\model
+    return null
+]
+
+loadRegularizationState: function [model state][
+    validated: lrValidateRegularizationState model state
+    lrApplyValidatedRegularizationState validated
+    return model
+]
+
+lrRegularizationCheckpointPayload: function [state][
+    mode: (state\training)? -> 1 -> 0
+    rows: lrFreshBlock
+    loop state\nodes 'entry -> 'rows ++ @[@[entry\name entry\rate entry\seed entry\pass]]
+    return @[mode rows]
+]
+
+lrRegularizationStateFromPayload: function [payload][
+    unless and? [block? payload][(size payload) = 2] -> panic "learn: malformed regularization checkpoint payload"
+    unless contains? [0 1] payload\0 -> panic "learn: malformed regularization mode"
+    unless block? payload\1 -> panic "learn: malformed regularization rows"
+    nodes: lrFreshBlock
+    loop payload\1 'row [
+        unless and? [block? row][(size row) = 4] -> panic "learn: malformed regularization row"
+        'nodes ++ @[#[name: to :literal to :string row\0 rate: row\1 seed: row\2 pass: row\3]]
+    ]
+    return #[format: "learn.regularization-state" version: "0.18" training: payload\0 = 1 nodes: nodes]
+]
+
 lrDatasetRows: function [value label][
     source: lrAsTensor value
     if empty? source\shape -> panic ~"learn: |label| must have a row dimension"
@@ -237,14 +312,16 @@ saveSessionCheckpoint: function [model optimizer iterator path][
     modelPayload: lrModelCheckpointPayload stateDict model
     optimizerPayload: lrOptimizerCheckpointPayload optimizerState optimizer
     batcherPayload: lrBatcherCheckpointPayload batcherState iterator
-    payload: @[10013 modelPayload optimizerPayload batcherPayload]
+    savedRegularizationState: regularizationState model
+    regularizationPayload: lrRegularizationCheckpointPayload savedRegularizationState
+    schedulerPayload: lrFreshBlock
     if key? callAttrs 'scheduler [
         unless is? :learnStepLr callAttrs\scheduler -> panic "learn: checkpoint scheduler must be a learning-rate scheduler"
         unless same? callAttrs\scheduler\optimizer optimizer -> panic "learn: checkpoint scheduler belongs to a different optimizer"
         savedSchedulerState: schedulerState callAttrs\scheduler
         schedulerPayload: lrSchedulerCheckpointPayload savedSchedulerState
-        payload: @[10015 modelPayload optimizerPayload batcherPayload schedulerPayload]
     ]
+    payload: @[10018 modelPayload optimizerPayload batcherPayload regularizationPayload schedulerPayload]
     write (to :string payload) path
     return path
 ]
@@ -253,8 +330,8 @@ loadSessionCheckpoint: function [model optimizer iterator path][
     callAttrs: attrs
     payload: parse read path
     unless and? [block? payload][not? empty? payload] -> panic "learn: malformed session checkpoint payload"
-    unless contains? [10013 10015] payload\0 -> panic "learn: unsupported session checkpoint header"
-    expectedSize: (payload\0 = 10015)? -> 5 -> 4
+    unless contains? [10013 10015 10018] payload\0 -> panic "learn: unsupported session checkpoint header"
+    expectedSize: (payload\0 = 10013)? -> 4 -> (payload\0 = 10015)? -> 5 -> 6
     unless (size payload) = expectedSize -> panic "learn: malformed session checkpoint payload"
     modelState: lrStateFromCheckpointPayload payload\1
     optimizerStateValue: lrOptimizerStateFromCheckpointPayload payload\2 (size optimizer\parameterList)
@@ -270,10 +347,23 @@ loadSessionCheckpoint: function [model optimizer iterator path][
         schedulerStateValue: lrSchedulerStateFromPayload payload\4
         validatedScheduler: lrValidateSchedulerState callAttrs\scheduler schedulerStateValue
     ]
+    validatedRegularization: null
+    if payload\0 = 10018 [
+        regularizationStateValue: lrRegularizationStateFromPayload payload\4
+        validatedRegularization: lrValidateRegularizationState model regularizationStateValue
+        unless and? [block? payload\5][empty? payload\5] [
+            unless key? callAttrs 'scheduler -> panic "learn: scheduler checkpoint requires loadSessionCheckpoint.scheduler"
+            unless is? :learnStepLr callAttrs\scheduler -> panic "learn: checkpoint scheduler must be a learning-rate scheduler"
+            unless same? callAttrs\scheduler\optimizer optimizer -> panic "learn: checkpoint scheduler belongs to a different optimizer"
+            schedulerStateValue: lrSchedulerStateFromPayload payload\5
+            validatedScheduler: lrValidateSchedulerState callAttrs\scheduler schedulerStateValue
+        ]
+    ]
     lrApplyValidatedState validatedModel
     lrApplyValidatedOptimizerState validatedOptimizer
     loadBatcherState iterator validatedBatcher
     unless null? validatedScheduler -> loadSchedulerState callAttrs\scheduler validatedScheduler
+    unless null? validatedRegularization -> lrApplyValidatedRegularizationState validatedRegularization
     return model
 ]
 
@@ -310,6 +400,7 @@ lrValidationLoss: function [model validation inputNames lossName batchSize][
     validationRows: validationIterator\features\shape\0
     if validationRows = 0 -> panic "learn: validation dataset cannot be empty"
     weightedLoss: 0.0
+    evalMode model
     while [validationIterator\position < validationRows][
         batch: nextBatch validationIterator
         feed: lrTrainingFeed inputNames batch
@@ -318,6 +409,7 @@ lrValidationLoss: function [model validation inputNames lossName batchSize][
         batchLoss: lrTrainingLoss model lossName
         weightedLoss: weightedLoss + (batchLoss * batchRows)
     ]
+    trainMode model
     return weightedLoss / validationRows
 ]
 
@@ -351,6 +443,7 @@ train: function [model optimizer iterator][
         unless is? :learnStepLr scheduler -> panic "learn: train.scheduler must be a learning-rate scheduler"
         unless same? scheduler\optimizer optimizer -> panic "learn: training scheduler belongs to a different optimizer"
     ]
+    trainMode model
 
     records: lrFreshBlock
     totalBatches: 0
@@ -361,6 +454,7 @@ train: function [model optimizer iterator][
     if rows = 0 -> panic "learn: training dataset cannot be empty"
 
     while [completed < epochs][
+        trainMode model
         if iterator\position >= rows [
             iterator\epoch: iterator\epoch + 1
             iterator\position: 0

@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.17 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass learning, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.18 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass learning, explicit regularization modes, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -84,6 +84,12 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 
 `classPrediction logits` returns argmax class indices with the class axis removed. `multiclassAccuracy targets predictions` compares integer-valued class tensors. `inputShape` makes matrix classifiers declarable before their runtime batch shape is known.
 
+## Regularization
+
+`dropout.rate:.seed:` creates deterministic inverted dropout for tensors or graph values. Graphs begin in training mode; `trainMode`, `evalMode`, and `trainingMode?` control dropout explicitly. Evaluation mode is an identity operation, while training forward passes advance a seeded mask sequence and backward reuses the exact mask from its forward pass.
+
+`l1Penalty.rate:` and `l2Penalty.rate:` return differentiable scalar penalties for a non-empty parameter block. Add them to an ordinary data loss inside a graph. `regularizationState` and `loadRegularizationState` preserve dropout counters and mode; v0.18 session checkpoints include that state automatically, with or without a learning-rate scheduler.
+
 ## Graph transformations
 
 `validateGraphData`, `deadCodeEliminate`, `commonSubexpressions`, and `optimizeGraph` analyze or rewrite the plain dictionary returned by `graphData`. `graphDot` exports the same representation for Graphviz visualization. These passes preserve the live eager graph and make lazy execution work explicit at the data boundary.
@@ -104,6 +110,7 @@ arturo examples/regression.art
 arturo examples/training-loop.art
 arturo examples/preprocessing.art
 arturo examples/multiclass.art
+arturo examples/regularization.art
 arturo examples/native-cpu.art
 ```
 

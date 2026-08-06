@@ -105,11 +105,13 @@ lrExecuteDataNode: function [node parentValues][
     if operation = 'neg -> return lrTensorUnary parentValues\0 'neg
     if operation = 'exp -> return lrTensorUnary parentValues\0 'exp
     if operation = 'log -> return lrTensorUnary parentValues\0 'log
+    if operation = 'abs -> return lrTensorUnary parentValues\0 'abs
     if operation = 'sigmoid -> return lrTensorUnary parentValues\0 'sigmoid
     if operation = 'relu -> return lrTensorUnary parentValues\0 'relu
     if operation = 'tanh -> return lrTensorUnary parentValues\0 'tanh
     if operation = 'softmax -> return lrTensorSoftmax parentValues\0
     if operation = 'crossEntropy -> return lrTensorCrossEntropy parentValues\0 parentValues\1
+    if operation = 'dropout -> return lrDropoutTensor parentValues\0 node\context
     if operation = 'add -> return lrTensorBinary parentValues\0 parentValues\1 'add
     if operation = 'sub -> return lrTensorBinary parentValues\0 parentValues\1 'sub
     if operation = 'mul -> return lrTensorBinary parentValues\0 parentValues\1 'mul

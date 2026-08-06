@@ -1,0 +1,276 @@
+; Reverse-mode automatic differentiation over learn tensors.
+
+import relative {./tensor}!
+
+define :learnValue [
+    init: constructor [value gradient requiresGradient operation parents parameter]
+
+    add: method [that][lrValueBinary this that 'add]
+    sub: method [that][lrValueBinary this that 'sub]
+    mul: method [that][lrValueBinary this that 'mul]
+    div: method [that][lrValueBinary this that 'div]
+    pow: method [that][lrValueBinary this that 'pow]
+    neg: method [][
+        minusOne: 0.0 - 1.0
+        raw: this\value * minusOne
+        lrMakeValue #[
+            value: raw
+            requiresGradient: this\requiresGradient
+            operation: 'neg
+            parents: @[this]
+            parameter: false
+        ]
+    ]
+
+    string: method [][to :string this\value]
+]
+
+lrMakeValue: function [spec][
+    args: [null null null null null null]
+    set args 0 lrAsTensor spec\value
+    set args 1 null
+    set args 2 spec\requiresGradient
+    set args 3 spec\operation
+    set args 4 spec\parents
+    set args 5 spec\parameter
+    return to :learnValue args
+]
+
+lrAsValue: function [value][
+    if is? :learnValue value -> return value
+    return lrMakeValue #[value: lrAsTensor value requiresGradient: false operation: 'constant parents: [] parameter: false]
+]
+
+variable: function [value][
+    return lrMakeValue #[value: lrAsTensor value requiresGradient: true operation: 'leaf parents: [] parameter: false]
+]
+
+detach: function [value][
+    if is? :learnValue value -> return lrMakeTensor value\value\shape value\value\data
+    return lrMakeTensor (lrAsTensor value)\shape (lrAsTensor value)\data
+]
+
+gradient: function [value][
+    unless is? :learnValue value -> panic "learn: gradient expects a differentiable value"
+    return value\gradient
+]
+
+lrValueBinary: function [left right operation][
+    a: lrAsValue left
+    b: lrAsValue right
+    if and? [operation = 'pow][b\requiresGradient] ->
+        panic "learn: differentiating with respect to a tensor exponent is not supported"
+
+    result: lrTensorBinary a\value b\value operation
+    requires: or? [a\requiresGradient][b\requiresGradient]
+    return lrMakeValue #[value: result requiresGradient: requires operation: operation parents: @[a b] parameter: false]
+]
+
+lrValueUnary: function [value operation][
+    source: lrAsValue value
+    result: lrTensorUnary source\value operation
+    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: operation parents: @[source] parameter: false]
+]
+
+lrValueReduce: function [value operation][
+    source: lrAsValue value
+    result: (operation = 'sum)? -> tensorSum source\value -> mean source\value
+    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: operation parents: @[source] parameter: false]
+]
+
+lrValueReshape: function [value dims][
+    source: lrAsValue value
+    result: reshape source\value dims
+    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'reshape parents: @[source] parameter: false]
+]
+
+lrValueTranspose: function [value][
+    source: lrAsValue value
+    result: transpose source\value
+    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'transpose parents: @[source] parameter: false]
+]
+
+lrValueMatmul: function [left right][
+    a: lrAsValue left
+    b: lrAsValue right
+    result: matmul a\value b\value
+    return lrMakeValue #[value: result requiresGradient: or? [a\requiresGradient][b\requiresGradient] operation: 'matmul parents: @[a b] parameter: false]
+]
+
+lrZerosLike: function [value][
+    return lrMakeTensor value\shape map value\data 'unused -> 0.0
+]
+
+lrOnesLike: function [value][
+    return lrMakeTensor value\shape map value\data 'unused -> 1.0
+]
+
+lrUnbroadcast: function [value targetShape][
+    if value\shape = targetShape -> return lrMakeTensor value\shape value\data
+    data: []
+    targetCount: lrCount targetShape
+    if targetCount > 0 [loop 1..targetCount 'unused -> 'data ++ 0.0]
+
+    if not? empty? value\data [
+        loop 0..((size value\data) - 1) 'i [
+            targetIndex: lrBroadcastIndex targetShape value\shape i
+            set data targetIndex (data\[targetIndex] + value\data\[i])
+        ]
+    ]
+    return lrMakeTensor targetShape data
+]
+
+lrAccumulate: function [node contribution][
+    unless node\requiresGradient -> return null
+    reduced: lrUnbroadcast contribution node\value\shape
+    emptyGradient: null? node\gradient
+    if emptyGradient -> node\gradient: reduced
+    unless emptyGradient -> node\gradient: lrTensorBinary node\gradient reduced 'add
+    return null
+]
+
+lrContainsIdentity?: function [items sought][
+    loop items 'item [if same? item sought -> return true]
+    return false
+]
+
+lrTopo: function [node][
+    seen: []
+    result: []
+    pending: @[@[node false]]
+
+    while [not? empty? pending][
+        item: pop 'pending
+        current: item\0
+        expanded: item\1
+
+        if expanded [
+            unless lrContainsIdentity? result current -> 'result ++ @[current]
+        ]
+        unless expanded [
+            unless lrContainsIdentity? seen current [
+                'seen ++ @[current]
+                'pending ++ @[@[current true]]
+                loop reverse current\parents 'parent -> 'pending ++ @[@[parent false]]
+            ]
+        ]
+    ]
+    return result
+]
+
+lrForwardNode: function [node][
+    op: node\operation
+    if or? [op = 'leaf][op = 'constant] -> return null
+
+    if op = 'neg [
+        minusOne: 0.0 - 1.0
+        node\value: lrTensorBinary node\parents\0\value minusOne 'mul
+    ]
+    if op = 'add -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'add
+    if op = 'sub -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'sub
+    if op = 'mul -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'mul
+    if op = 'div -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'div
+    if op = 'pow -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'pow
+    if op = 'sum -> node\value: tensorSum node\parents\0\value
+    if op = 'mean -> node\value: mean node\parents\0\value
+    if op = 'reshape -> node\value: reshape node\parents\0\value node\value\shape
+    if op = 'transpose -> node\value: transpose node\parents\0\value
+    if op = 'matmul -> node\value: matmul node\parents\0\value node\parents\1\value
+    return null
+]
+
+forwardValue: function [value][
+    unless is? :learnValue value -> panic "learn: forwardValue expects a differentiable value"
+    topoOrder: lrTopo value
+    loop topoOrder 'node [lrForwardNode node]
+    return value
+]
+
+zeroGrad: function [target][
+    if is? :learnGraph target [
+        graphItems: values target\values
+        loop graphItems 'node [
+            if is? :learnValue node -> node\gradient: null
+        ]
+        return target
+    ]
+    unless is? :learnValue target -> panic "learn: zeroGrad expects a value or graph"
+    topoOrder: lrTopo target
+    loop topoOrder 'node [node\gradient: null]
+    return target
+]
+
+backward: function [output][
+    unless is? :learnValue output -> panic "learn: backward expects a differentiable value"
+    unless (size output\value\data) = 1 -> panic "learn: backward requires a one-element output"
+
+    topoOrder: lrTopo output
+    output\gradient: lrOnesLike output\value
+
+    loop reverse topoOrder 'node [
+        if or? [null? node\gradient][empty? node\parents] -> continue
+        up: node\gradient
+        op: node\operation
+
+        if op = 'add [
+            lrAccumulate node\parents\0 up
+            lrAccumulate node\parents\1 up
+        ]
+        if op = 'sub [
+            lrAccumulate node\parents\0 up
+            minusOne: 0.0 - 1.0
+            negativeUp: lrTensorBinary up minusOne 'mul
+            lrAccumulate node\parents\1 negativeUp
+        ]
+        if op = 'mul [
+            lrAccumulate node\parents\0 (lrTensorBinary up node\parents\1\value 'mul)
+            lrAccumulate node\parents\1 (lrTensorBinary up node\parents\0\value 'mul)
+        ]
+        if op = 'div [
+            lrAccumulate node\parents\0 (lrTensorBinary up node\parents\1\value 'div)
+            denom2: lrTensorBinary node\parents\1\value 2.0 'pow
+            numerator: lrTensorBinary up node\parents\0\value 'mul
+            quotient: lrTensorBinary numerator denom2 'div
+            minusOne: 0.0 - 1.0
+            negativeQuotient: lrTensorBinary quotient minusOne 'mul
+            lrAccumulate node\parents\1 negativeQuotient
+        ]
+        if op = 'neg [
+            minusOne: 0.0 - 1.0
+            negativeUp: lrTensorBinary up minusOne 'mul
+            lrAccumulate node\parents\0 negativeUp
+        ]
+        if op = 'pow [
+            exponent: node\parents\1\value
+            unless (size exponent\data) = 1 -> panic "learn: differentiable power requires a scalar exponent"
+            p: exponent\data\0
+            basePower: lrTensorBinary node\parents\0\value (p - 1.0) 'pow
+            local: lrTensorBinary p basePower 'mul
+            lrAccumulate node\parents\0 (lrTensorBinary up local 'mul)
+        ]
+        if op = 'sum [
+            ones: lrOnesLike node\parents\0\value
+            local: lrTensorBinary ones up 'mul
+            lrAccumulate node\parents\0 local
+        ]
+        if op = 'mean [
+            ones: lrOnesLike node\parents\0\value
+            elementCount: size node\parents\0\value\data
+            scale: up\data\0 / elementCount
+            local: lrTensorBinary ones scale 'mul
+            lrAccumulate node\parents\0 local
+        ]
+        if op = 'reshape ->
+            lrAccumulate node\parents\0 (reshape up node\parents\0\value\shape)
+        if op = 'transpose -> lrAccumulate node\parents\0 (transpose up)
+        if op = 'matmul [
+            rightT: transpose node\parents\1\value
+            leftT: transpose node\parents\0\value
+            leftGrad: matmul up rightT
+            rightGrad: matmul leftT up
+            lrAccumulate node\parents\0 leftGrad
+            lrAccumulate node\parents\1 rightGrad
+        ]
+    ]
+    return output
+]

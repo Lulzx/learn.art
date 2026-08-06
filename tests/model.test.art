@@ -1,0 +1,70 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "graphs and optimization" [
+    test "discovers parameters in declaration order" [
+        x: tensor [[1.0]]
+        model: graph [
+            w: parameter.zeros [1 1]
+            b: parameter.zeros [1]
+            linear: matmul x w
+            prediction: linear + b
+            loss: mean square prediction
+        ]
+        found: parameters model
+        firstParameter: found\0
+        secondParameter: found\1
+        modelW: model\w
+        modelB: model\b
+        assert -> 2 = size found
+        assert -> same? firstParameter modelW
+        assert -> same? secondParameter modelB
+    ]
+
+    test "SGD performs an update and forward recomputes values" [
+        x: tensor [[2.0]]
+        model: graph [
+            w: parameter.zeros [1 1]
+            prediction: matmul x w
+            residual: prediction - (tensor [[4.0]])
+            loss: mean square residual
+        ]
+        optimizer: sgd.rate: 0.1 (parameters model)
+        zeroGrad model
+        forward model
+        backward model\loss
+        step optimizer
+        forward model
+        weight: model\w\value\data\0
+        lossValue: model\loss\value\data\0
+        assert -> 1.6 = weight
+        assert -> 0.64 > lossValue
+    ]
+
+    test "learns y = 2x + 1" [
+        x: tensor [[0.0] [1.0] [2.0] [3.0]]
+        y: tensor [[1.0] [3.0] [5.0] [7.0]]
+        model: graph [
+            w: parameter.zeros [1 1]
+            b: parameter.zeros [1]
+            linear: matmul x w
+            prediction: linear + b
+            residual: prediction - y
+            squared: square residual
+            loss: mean squared
+        ]
+        optimizer: sgd.rate: 0.05 (parameters model)
+        do.times: 500 [
+            zeroGrad model
+            forward model
+            backward model\loss
+            step optimizer
+        ]
+        weight: model\w\value\data\0
+        bias: model\b\value\data\0
+        weightError: abs weight - 2.0
+        biasError: abs bias - 1.0
+        assert -> weightError < 0.05
+        assert -> biasError < 0.05
+    ]
+]

@@ -1,0 +1,306 @@
+; Dense, owned, row-major tensors of rank zero through two.
+
+define :learnTensor [
+    init: constructor [shape strides data]
+
+    add: method [that][(is? :learnValue that)? -> lrValueBinary this that 'add -> lrTensorBinary this that 'add]
+    sub: method [that][(is? :learnValue that)? -> lrValueBinary this that 'sub -> lrTensorBinary this that 'sub]
+    mul: method [that][(is? :learnValue that)? -> lrValueBinary this that 'mul -> lrTensorBinary this that 'mul]
+    div: method [that][(is? :learnValue that)? -> lrValueBinary this that 'div -> lrTensorBinary this that 'div]
+    pow: method [that][(is? :learnValue that)? -> lrValueBinary this that 'pow -> lrTensorBinary this that 'pow]
+    neg: method [][lrTensorUnary this 'neg]
+
+    string: method [][lrTensorString this]
+]
+
+lrNumeric?: function [value][
+    return or? [integer? value][floating? value]
+]
+
+lrFloat: function [value][
+    unless lrNumeric? value -> panic ~"learn: tensor values must be numeric, got |type value|"
+    return to :floating value
+]
+
+lrRandomSmall: function [][
+    return (random 0.0 0.2) - 0.1
+]
+
+lrCount: function [dims][
+    if empty? dims -> return 1
+    count: 1
+    loop dims 'dim -> count: count * dim
+    return count
+]
+
+lrStrides: function [dims][
+    case size dims [
+        0 -> return []
+        1 -> return [1]
+        2 -> return @[dims\1 1]
+    ]
+    panic "learn: tensors are limited to rank 0, 1, or 2"
+]
+
+lrValidateShape: function [dims][
+    unless block? dims -> panic "learn: a tensor shape must be a block"
+    if (size dims) > 2 -> panic "learn: tensors are limited to rank 0, 1, or 2"
+    loop dims 'dim [
+        unless integer? dim -> panic "learn: tensor dimensions must be integers"
+        if dim < 0 -> panic "learn: tensor dimensions cannot be negative"
+    ]
+    return dims
+]
+
+lrMakeTensor: function [dims data][
+    lrValidateShape dims
+    unless (lrCount dims) = (size data) ->
+        panic ~"learn: shape |dims| requires |lrCount dims| values, got |size data|"
+
+    floats: map data 'item -> lrFloat item
+    args: [null null null]
+    set args 0 new dims
+    set args 1 lrStrides dims
+    set args 2 floats
+    return to :learnTensor args
+]
+
+lrTensorFromData: function [source][
+    if lrNumeric? source -> return lrMakeTensor [] @[source]
+    unless block? source -> panic "learn: tensor expects a number or a block"
+
+    if empty? source -> return lrMakeTensor [0] []
+
+    firstItem: first source
+    if block? firstItem [
+        cols: size firstItem
+        flat: []
+        loop source 'row [
+            unless block? row -> panic "learn: matrix rows must all be blocks"
+            unless (size row) = cols -> panic "learn: matrix rows must have equal length"
+            loop row 'item [
+                if block? item -> panic "learn: tensors above rank 2 are not supported"
+                'flat ++ lrFloat item
+            ]
+        ]
+        return lrMakeTensor @[(size source) cols] flat
+    ]
+
+    flat: []
+    loop source 'item [
+        if block? item -> panic "learn: vector values cannot mix numbers and blocks"
+        'flat ++ lrFloat item
+    ]
+    return lrMakeTensor @[size source] flat
+]
+
+tensor: function [source][
+    callAttrs: attrs
+    makeZeros: key? callAttrs 'zeros
+    makeOnes: key? callAttrs 'ones
+    makeRandom: key? callAttrs 'random
+    makeFilled: or? [makeZeros][or? [makeOnes][makeRandom]]
+
+    if makeFilled [
+        dims: lrValidateShape source
+        data: []
+        count: lrCount dims
+        if count > 0 [
+            loop 1..count 'unused [
+                value: 0.0
+                if makeOnes -> value: 1.0
+                if makeRandom -> value: lrRandomSmall
+                'data ++ value
+            ]
+        ]
+        return lrMakeTensor dims data
+    ]
+
+    return lrTensorFromData source
+]
+
+lrAsTensor: function [value][
+    if is? :learnTensor value -> return value
+    if lrNumeric? value -> return lrTensorFromData value
+    panic ~"learn: expected a tensor or number, got |type value|"
+]
+
+shape: function [value][
+    if is? :learnTensor value -> return new value\shape
+    if is? :learnValue value -> return new value\value\shape
+    panic ~"learn: shape expects a tensor or differentiable value, got |type value|"
+]
+
+lrBroadcastShape: function [left right][
+    if empty? left -> return new right
+    if empty? right -> return new left
+
+    if and? [(size left) = 1][(size right) = 1] [
+        a: left\0
+        b: right\0
+        unless or? [a = b][or? [a = 1][b = 1]] ->
+            panic ~"learn: cannot broadcast shapes |left| and |right|"
+        return @[max @[a b]]
+    ]
+
+    ; Align rank-one tensors with the trailing matrix dimension.
+    arows: ((size left) = 2)? -> left\0 -> 1
+    acols: ((size left) = 2)? -> left\1 -> left\0
+    brows: ((size right) = 2)? -> right\0 -> 1
+    bcols: ((size right) = 2)? -> right\1 -> right\0
+
+    unless or? [arows = brows][or? [arows = 1][brows = 1]] ->
+        panic ~"learn: cannot broadcast shapes |left| and |right|"
+    unless or? [acols = bcols][or? [acols = 1][bcols = 1]] ->
+        panic ~"learn: cannot broadcast shapes |left| and |right|"
+
+    return @[max @[arows brows] max @[acols bcols]]
+]
+
+lrBroadcastIndex: function [dims outDims flatIndex][
+    if empty? dims -> return 0
+    if (size outDims) = 1 [
+        if dims\0 = 1 -> return 0
+        return flatIndex
+    ]
+
+    cols: outDims\1
+    row: to :integer floor (flatIndex / cols)
+    col: flatIndex % cols
+
+    if (size dims) = 1 [
+        if dims\0 = 1 -> return 0
+        return col
+    ]
+
+    sourceRow: (dims\0 = 1)? -> 0 -> row
+    sourceCol: (dims\1 = 1)? -> 0 -> col
+    return (sourceRow * dims\1) + sourceCol
+]
+
+lrTensorBinary: function [left right operation][
+    a: lrAsTensor left
+    b: lrAsTensor right
+    dims: lrBroadcastShape a\shape b\shape
+    data: []
+    count: lrCount dims
+
+    if count > 0 [
+        loop 0..(count - 1) 'i [
+            av: a\data\[lrBroadcastIndex a\shape dims i]
+            bv: b\data\[lrBroadcastIndex b\shape dims i]
+            value: null
+            if operation = 'add -> value: av + bv
+            if operation = 'sub -> value: av - bv
+            if operation = 'mul -> value: av * bv
+            if operation = 'div -> value: av / bv
+            if operation = 'pow -> value: av ^ bv
+            if null? value -> panic ~"learn: unknown tensor operation |operation|"
+            'data ++ value
+        ]
+    ]
+    return lrMakeTensor dims data
+]
+
+lrTensorUnary: function [value operation][
+    source: lrAsTensor value
+    data: map source\data 'item ->
+        (operation = 'neg)? -> 0.0 - item -> panic ~"learn: unknown unary tensor operation |operation|"
+    return lrMakeTensor source\shape data
+]
+
+reshape: function [value dims][
+    if is? :learnValue value -> return lrValueReshape value dims
+    source: lrAsTensor value
+    lrValidateShape dims
+    unless (lrCount dims) = (size source\data) ->
+        panic ~"learn: cannot reshape |source\shape| to |dims|"
+    return lrMakeTensor dims source\data
+]
+
+transpose: function [value][
+    if is? :learnValue value -> return lrValueTranspose value
+    source: lrAsTensor value
+    unless (size source\shape) = 2 -> return lrMakeTensor source\shape source\data
+
+    rows: source\shape\0
+    cols: source\shape\1
+    data: []
+    if (rows * cols) > 0 [
+        loop 0..(cols - 1) 'col [
+            loop 0..(rows - 1) 'row ->
+                'data ++ source\data\[(row * cols) + col]
+        ]
+    ]
+    return lrMakeTensor @[cols rows] data
+]
+
+tensorSum: function [value][
+    if is? :learnValue value -> return lrValueReduce value 'sum
+    source: lrAsTensor value
+    total: 0.0
+    loop source\data 'item -> total: total + item
+    return lrMakeTensor [] @[total]
+]
+
+mean: function [value][
+    if is? :learnValue value -> return lrValueReduce value 'mean
+    source: lrAsTensor value
+    if empty? source\data -> panic "learn: mean is undefined for an empty tensor"
+    total: 0.0
+    loop source\data 'item -> total: total + item
+    return lrMakeTensor [] @[total / size source\data]
+]
+
+square: function [value][
+    return value ^ 2.0
+]
+
+matmul: function [left right][
+    if or? [is? :learnValue left][is? :learnValue right] ->
+        return lrValueMatmul left right
+
+    a: lrAsTensor left
+    b: lrAsTensor right
+    unless and? [(size a\shape) = 2][(size b\shape) = 2] ->
+        panic "learn: matmul requires two rank-2 tensors"
+    unless a\shape\1 = b\shape\0 ->
+        panic ~"learn: matmul shapes |a\shape| and |b\shape| are incompatible"
+
+    rows: a\shape\0
+    inner: a\shape\1
+    cols: b\shape\1
+    data: []
+    if (rows * cols) > 0 [
+        loop 0..(rows - 1) 'row [
+            loop 0..(cols - 1) 'col [
+                total: 0.0
+                if inner > 0 [
+                    loop 0..(inner - 1) 'k ->
+                        total: total + (a\data\[(row * inner) + k] * b\data\[(k * cols) + col])
+                ]
+                'data ++ total
+            ]
+        ]
+    ]
+    return lrMakeTensor @[rows cols] data
+]
+
+lrTensorString: function [value][
+    dims: value\shape
+    if empty? dims -> return to :string value\data\0
+    if (size dims) = 1 -> return to :string value\data
+
+    rows: []
+    cols: dims\1
+    if dims\0 > 0 [
+        loop 0..(dims\0 - 1) 'row [
+            values: []
+            if cols > 0 [
+                loop 0..(cols - 1) 'col -> 'values ++ value\data\[(row * cols) + col]
+            ]
+            'rows ++ @[values]
+        ]
+    ]
+    return to :string rows
+]

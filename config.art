@@ -1,0 +1,3 @@
+path: "tests"
+suffix: ".test.art"
+binary: "arturo"

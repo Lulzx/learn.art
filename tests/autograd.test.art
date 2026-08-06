@@ -1,0 +1,126 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "reverse-mode autodiff" [
+    test "differentiates a scalar polynomial" [
+        x: variable tensor 2.0
+        squared: square x
+        linear: x * 3.0
+        y: squared + linear
+        backward y
+        gx: gradient x
+        actual: gx\data\0
+        assert -> 7.0 = actual
+    ]
+
+    test "accumulates shared-parent gradients" [
+        x: variable tensor 2.0
+        y: x * x
+        backward y
+        gx: gradient x
+        actual: gx\data\0
+        assert -> 4.0 = actual
+    ]
+
+    test "unbroadcasts gradients to the operand shape" [
+        x: variable tensor [[1 2] [3 4]]
+        b: variable tensor [10 20]
+        shifted: x + b
+        loss: tensorSum shifted
+        backward loss
+        gx: gradient x
+        gb: gradient b
+        xData: gx\data
+        bData: gb\data
+        assert -> [1.0 1.0 1.0 1.0] = xData
+        assert -> [2.0 2.0] = bData
+    ]
+
+    test "differentiates matrix multiplication" [
+        a: variable tensor [[1 2]]
+        b: variable tensor [[3] [4]]
+        productValue: matmul a b
+        loss: tensorSum productValue
+        backward loss
+        ga: gradient a
+        gb: gradient b
+        aData: ga\data
+        bData: gb\data
+        assert -> [3.0 4.0] = aData
+        assert -> [1.0 2.0] = bData
+    ]
+
+    test "differentiates subtraction and division on both operands" [
+        a: variable tensor [2 4]
+        b: variable tensor 2.0
+        quotient: a / b
+        one: tensor 1.0
+        shifted: quotient - one
+        loss: tensorSum shifted
+        backward loss
+        ga: gradient a
+        gb: gradient b
+        aData: ga\data
+        bValue: gb\data\0
+        expectedB: 0.0 - 1.5
+        assert -> [0.5 0.5] = aData
+        assert -> expectedB = bValue
+    ]
+
+    test "differentiates negation, reshape, and transpose" [
+        x: variable tensor [[1 2]]
+        negative: neg x
+        column: reshape negative [2 1]
+        row: transpose column
+        loss: tensorSum row
+        backward loss
+        gx: gradient x
+        actual: gx\data
+        minusOne: 0.0 - 1.0
+        expectedTensor: tensor @[minusOne minusOne]
+        expected: expectedTensor\data
+        assert -> expected = actual
+    ]
+
+    test "matches a centered finite difference" [
+        x: variable tensor 1.7
+        y: mean square x
+        backward y
+        gx: gradient x
+        analytic: gx\data\0
+
+        epsilonValue: 0.00001
+        plusTensor: square tensor (1.7 + epsilonValue)
+        minusTensor: square tensor (1.7 - epsilonValue)
+        plusValue: plusTensor\data\0
+        minusValue: minusTensor\data\0
+        numerator: plusValue - minusValue
+        denominator: 2.0 * epsilonValue
+        numericGradient: numerator / denominator
+        delta: analytic - numericGradient
+        lowerBound: 0.0 - 0.0001
+        aboveLower?: delta >= lowerBound
+        belowUpper?: delta =< 0.0001
+        gradientsMatch?: and? [aboveLower?][belowUpper?]
+        assert -> gradientsMatch?
+    ]
+
+    test "zeroes gradients and detaches values" [
+        x: variable tensor 3.0
+        y: square x
+        backward y
+        zeroGrad x
+        plain: detach x
+        cleared: gradient x
+        plainValue: plain\data\0
+        plainTensor?: is? :learnTensor plain
+        assert -> null? cleared
+        assert -> plainTensor?
+        assert -> 3.0 = plainValue
+    ]
+
+    test "requires a scalar output" [
+        x: variable tensor [1 2]
+        assert -> throws? [backward x]
+    ]
+]

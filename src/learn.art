@@ -1,0 +1,3 @@
+; Public entry point. Internal helpers use the `lr` prefix.
+
+import relative {./model}!

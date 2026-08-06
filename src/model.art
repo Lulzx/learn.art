@@ -1,0 +1,121 @@
+; Named differentiable graphs, parameters, and stateful SGD.
+
+import relative {./autograd}!
+
+define :learnGraph [
+    init: constructor [values names parameterList]
+
+    get: method [what][
+        if key? this\values what -> return this\values\[what]
+        panic ~"learn: graph has no value named |what|"
+    ]
+
+    string: method [][~"learn graph |this\names|"]
+]
+
+define :learnSgd [
+    init: constructor [parameterList rate]
+    string: method [][~"SGD(rate: |this\rate|, parameters: |size this\parameterList|)"]
+]
+
+parameter: function [dims][
+    callAttrs: attrs
+    makeZeros: key? callAttrs 'zeros
+    makeRandom: key? callAttrs 'random
+    unless or? [makeZeros][makeRandom] ->
+        panic "learn: parameter requires .zeros or .random"
+
+    lrValidateShape dims
+    data: []
+    count: lrCount dims
+    if count > 0 [
+        loop 1..count 'unused [
+            item: 0.0
+            if makeRandom -> item: lrRandomSmall
+            'data ++ item
+        ]
+    ]
+    source: lrMakeTensor dims data
+    result: variable source
+    result\parameter: true
+    return result
+]
+
+lrGraphNames: function [body][
+    result: []
+    loop body 'token [
+        if label? token -> 'result ++ @[to :literal to :string token]
+    ]
+    return result
+]
+
+graph: function [body][
+    unless block? body -> panic "learn: graph expects a block"
+    names: lrGraphNames body
+    if empty? names -> panic "learn: graph must contain labeled expressions"
+
+    ; The block runs in this call frame. Its labels therefore become visible
+    ; through `symbols`, while references to the caller's tensors remain valid.
+    do body
+    scope: symbols
+    graphValues: #[]
+    parameterList: []
+
+    loop names 'name [
+        unless key? scope name -> panic ~"learn: graph could not evaluate |name|"
+        item: scope\[name]
+        unless or? [is? :learnValue item][is? :learnTensor item] ->
+            panic ~"learn: graph value |name| is not a tensor expression"
+        set graphValues name item
+        if and? [is? :learnValue item][item\parameter] -> 'parameterList ++ @[item]
+    ]
+
+    args: [null null null]
+    set args 0 graphValues
+    set args 1 names
+    set args 2 parameterList
+    return to :learnGraph args
+]
+
+parameters: function [model][
+    unless is? :learnGraph model -> panic "learn: parameters expects a graph"
+    return model\parameterList
+]
+
+forward: function [model][
+    unless is? :learnGraph model -> panic "learn: forward expects a graph"
+    loop model\names 'name [
+        item: model\values\[name]
+        if is? :learnValue item -> forwardValue item
+    ]
+    return model
+]
+
+sgd: function [parameterList][
+    rate: 0.01
+    requestedRate: attr 'rate
+    unless null? requestedRate -> rate: requestedRate
+    unless lrNumeric? rate -> panic "learn: SGD rate must be numeric"
+    unless rate > 0 -> panic "learn: SGD rate must be positive"
+
+    loop parameterList 'item [
+        unless and? [is? :learnValue item][item\parameter] ->
+            panic "learn: SGD expects parameter values"
+    ]
+
+    args: [null null]
+    set args 0 parameterList
+    set args 1 to :floating rate
+    return to :learnSgd args
+]
+
+step: function [optimizer][
+    unless is? :learnSgd optimizer -> panic "learn: step expects an SGD optimizer"
+    loop optimizer\parameterList 'item [
+        if null? item\gradient -> panic "learn: cannot step a parameter without a gradient"
+        update: lrTensorBinary item\gradient optimizer\rate 'mul
+        nextValue: lrTensorBinary item\value update 'sub
+        item\value\data: nextValue\data
+    ]
+    return optimizer
+]

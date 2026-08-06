@@ -1,0 +1,93 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "dense tensors" [
+    test "constructs scalar, vector, and matrix tensors" [
+        scalarTensor: tensor 2
+        vectorTensor: tensor [1 2 3]
+        matrixTensor: tensor [[1 2] [3 4]]
+        scalarShape: shape scalarTensor
+        vectorShape: shape vectorTensor
+        matrixShape: shape matrixTensor
+        matrixData: matrixTensor\data
+        matrixStrides: matrixTensor\strides
+        assert -> [] = scalarShape
+        assert -> [3] = vectorShape
+        assert -> [2 2] = matrixShape
+        assert -> [1.0 2.0 3.0 4.0] = matrixData
+        assert -> [2 1] = matrixStrides
+    ]
+
+    test "creates filled tensors" [
+        z: tensor.zeros [2 2]
+        o: tensor.ones [3]
+        r: tensor.random [2]
+        zData: z\data
+        oData: o\data
+        rShape: shape r
+        randomValue: r\data\0
+        randomLowerBound: 0.0 - 0.1000001
+        randomAboveLower?: randomValue >= randomLowerBound
+        randomBelowUpper?: randomValue =< 0.1000001
+        randomInRange?: and? [randomAboveLower?][randomBelowUpper?]
+        assert -> [0.0 0.0 0.0 0.0] = zData
+        assert -> [1.0 1.0 1.0] = oData
+        assert -> [2] = rShape
+        assert -> randomInRange?
+    ]
+
+    test "broadcasts vectors and scalars over matrices" [
+        a: tensor [[1 2] [3 4]]
+        b: tensor [10 20]
+        shifted: a + b
+        result: shifted * 2.0
+        actual: result\data
+        assert -> [22.0 44.0 26.0 48.0] = actual
+    ]
+
+    test "supports arithmetic, reshape, transpose, and reductions" [
+        a: tensor [2 4]
+        divided: a / 2.0
+        powered: a ^ 2.0
+        negative: neg a
+        dividedData: divided\data
+        poweredData: powered\data
+        negativeData: negative\data
+        minusTwo: 0.0 - 2.0
+        minusFour: 0.0 - 4.0
+        expectedNegativeTensor: tensor @[minusTwo minusFour]
+        expectedNegative: expectedNegativeTensor\data
+        assert -> [1.0 2.0] = dividedData
+        assert -> [4.0 16.0] = poweredData
+        assert -> expectedNegative = negativeData
+        m: reshape a [2 1]
+        mt: transpose m
+        mtShape: shape mt
+        total: tensorSum a
+        averageValue: mean a
+        totalValue: total\data\0
+        meanValue: averageValue\data\0
+        assert -> [1 2] = mtShape
+        assert -> 6.0 = totalValue
+        assert -> 3.0 = meanValue
+    ]
+
+    test "multiplies matrices" [
+        a: tensor [[1 2] [3 4]]
+        b: tensor [[5] [6]]
+        result: matmul a b
+        resultShape: shape result
+        resultData: result\data
+        assert -> [2 1] = resultShape
+        assert -> [17.0 39.0] = resultData
+    ]
+
+    test "rejects malformed and incompatible tensors" [
+        malformed?: throws? [tensor [[1] [2 3]]]
+        broadcastMismatch?: throws? [(tensor [1 2]) + (tensor [1 2 3])]
+        matmulRanks?: throws? [matmul (tensor [1 2]) (tensor [1 2])]
+        assert -> malformed?
+        assert -> broadcastMismatch?
+        assert -> matmulRanks?
+    ]
+]

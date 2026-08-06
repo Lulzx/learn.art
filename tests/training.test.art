@@ -1,0 +1,84 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "deterministic mini-batch training" [
+    test "iterates paired rows in deterministic batches" [
+        features: tensor [[1] [2] [3] [4] [5]]
+        targets: tensor [10 20 30 40 50]
+        firstIterator: batcher.size: 2.seed: 7 features targets
+        secondIterator: batcher.size: 2.seed: 7 features targets
+        firstBatch: nextBatch firstIterator
+        matchingBatch: nextBatch secondIterator
+        tailBatch: nextBatch firstIterator
+        assert -> firstBatch\indices = matchingBatch\indices
+        assert -> firstBatch\features\data = matchingBatch\features\data
+        assert -> 2 = size firstBatch\indices
+        assert -> 2 = size tailBatch\indices
+        firstIndex: firstBatch\indices\0
+        assert -> firstBatch\targets\data\0 = targets\data\[firstIndex]
+    ]
+
+    test "advances epochs and reshuffles deterministically" [
+        features: tensor [[1] [2] [3]]
+        targets: tensor [1 2 3]
+        iterator: batcher.size: 2.seed: 11 features targets
+        firstBatch: nextBatch iterator
+        discard nextBatch iterator
+        nextEpoch: nextBatch iterator
+        assert -> 0 = firstBatch\epoch
+        assert -> 1 = nextEpoch\epoch
+        assert -> 2 = size nextEpoch\indices
+    ]
+
+    test "restores exact data-order position" [
+        features: tensor [[1] [2] [3] [4]]
+        targets: tensor [1 2 3 4]
+        source: batcher.size: 2.seed: 5 features targets
+        discard nextBatch source
+        state: batcherState source
+        expected: nextBatch source
+
+        restored: batcher.size: 2.seed: 5 features targets
+        loadBatcherState restored state
+        actual: nextBatch restored
+        assert -> expected\indices = actual\indices
+        assert -> expected\features\data = actual\features\data
+        assert -> state\position = 2
+    ]
+
+    test "round-trips an atomic training session checkpoint" [
+        features: tensor [[1] [2] [3] [4]]
+        targets: tensor [1 2 3 4]
+        iterator: batcher.size: 2.seed: 3 features targets
+        model: graph [p: parameter 1.0]
+        optimizer: adam (parameters model)
+        model\p\gradient: tensor 2.0
+        step optimizer
+        discard nextBatch iterator
+        path: ".learn-checkpoint-test.state"
+        saveSessionCheckpoint model optimizer iterator path
+        expectedBatch: nextBatch iterator
+
+        model\p\value\data: [9.0]
+        optimizer\timestep: 9
+        iterator\position: 0
+        loadSessionCheckpoint model optimizer iterator path
+        actualBatch: nextBatch iterator
+        assert -> expectedBatch\indices = actualBatch\indices
+        assert -> 1 = optimizer\timestep
+        assert -> model\p\value\data\0 < 1.0
+    ]
+
+    test "validates paired data and batcher state" [
+        features: tensor [[1] [2]]
+        targets: tensor [1]
+        mismatch?: throws? [batcher features targets]
+        validTargets: tensor [1 2]
+        iterator: batcher features validTargets
+        state: batcherState iterator
+        state\order: [0 0]
+        invalidState?: throws? [loadBatcherState iterator state]
+        assert -> mismatch?
+        assert -> invalidState?
+    ]
+]

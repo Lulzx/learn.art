@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.12 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, resumable training checkpoints, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.13 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, deterministic mini-batching, resumable training sessions, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -63,6 +63,8 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 `stateDict model` returns an owned, named parameter snapshot built from tensor buffers. `loadStateDict model state` validates the complete snapshot before mutating anything and is strict by default; use `loadStateDict.strict: false` for intentional partial restoration. `saveCheckpoint model path` and `loadCheckpoint model path` round-trip the same state through a portable Arturo-text format that is parsed as data rather than executed.
 
 `optimizerState` and `loadOptimizerState` preserve SGD rates, Momentum velocities, and Adam hyperparameters, moments, and timestep. `saveTrainingCheckpoint model optimizer path` and `loadTrainingCheckpoint model optimizer path` combine model and optimizer state; both halves are fully validated before either live object is changed.
+
+`batcher.size:.seed:` creates a deterministic paired feature/target iterator. `nextBatch` returns owned batch tensors, original row indices, and the current epoch. `batcherState` restores the exact permutation and cursor, while `saveSessionCheckpoint` and `loadSessionCheckpoint` atomically combine model, optimizer, and data-order state.
 
 ## Regression API
 

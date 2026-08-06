@@ -1,0 +1,14 @@
+import relative {../src/learn}!
+
+do [
+    features: tensor [[1] [2] [3] [4] [5]]
+    targets: tensor [10 20 30 40 50]
+    batches: batcher.size: 2.seed: 7 features targets
+
+    firstBatch: nextBatch batches
+    secondBatch: nextBatch batches
+
+    print firstBatch\indices
+    print firstBatch\features
+    print secondBatch\indices
+]

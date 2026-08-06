@@ -1,0 +1,176 @@
+; Deterministic mini-batch iteration and resumable data order.
+
+import relative {./state}!
+
+define :learnBatcher [
+    init: constructor [features targets batchSize shuffle seed epoch position order]
+]
+
+lrDatasetRows: function [value label][
+    source: lrAsTensor value
+    if empty? source\shape -> panic ~"learn: |label| must have a row dimension"
+    return source\shape\0
+]
+
+lrTrailingShape: function [dims startAxis][
+    result: lrFreshBlock
+    if startAxis < (size dims) [loop startAxis..((size dims) - 1) 'axis -> 'result ++ dims\[axis]]
+    return result
+]
+
+lrTakeRows: function [value indices][
+    source: lrAsTensor value
+    unless block? indices -> panic "learn: row indices must be a block"
+    rows: lrDatasetRows source "tensor"
+    rowWidth: (rows = 0)? -> lrCount lrLeadingShape source\shape 1 -> (size source\data) / rows
+    rowWidth: to :integer rowWidth
+    data: lrFreshBlock
+    loop indices 'row [
+        unless integer? row -> panic "learn: row indices must be integers"
+        if row < 0 -> row: row + rows
+        unless and? [row >= 0][row < rows] -> panic ~"learn: row index |row| is out of bounds"
+        if rowWidth > 0 [loop 0..(rowWidth - 1) 'offset -> 'data ++ source\data\[(row * rowWidth) + offset]]
+    ]
+    outputShape: @[(size indices)]
+    trailing: lrTrailingShape source\shape 1
+    loop trailing 'dim -> 'outputShape ++ dim
+    return lrMakeTensorOn outputShape data source\device
+]
+
+lrBatchOrder: function [count seed epoch shuffle][
+    order: lrFreshBlock
+    if count > 0 [loop 0..(count - 1) 'indexValue -> 'order ++ indexValue]
+    unless shuffle -> return order
+    state: seed + (epoch * 104729) + 1
+    if count > 1 [
+        candidates: reverse 1..(count - 1)
+        loop candidates 'shuffleIndex [
+            state: ((state * 1103515245) + 12345) % 2147483648
+            chosen: state % (shuffleIndex + 1)
+            held: order\[shuffleIndex]
+            set order shuffleIndex order\[chosen]
+            set order chosen held
+        ]
+    ]
+    return order
+]
+
+batcher: function [features targets][
+    callAttrs: attrs
+    batchSize: 32
+    shuffle: true
+    seed: 0
+    if key? callAttrs 'size -> batchSize: callAttrs\size
+    if key? callAttrs 'shuffle -> shuffle: callAttrs\shuffle
+    if key? callAttrs 'seed -> seed: callAttrs\seed
+    unless and? [integer? batchSize][batchSize > 0] -> panic "learn: batch size must be a positive integer"
+    unless logical? shuffle -> panic "learn: batcher.shuffle must be logical"
+    unless integer? seed -> panic "learn: batcher seed must be an integer"
+    x: lrAsTensor features
+    y: lrAsTensor targets
+    rows: lrDatasetRows x "features"
+    unless rows = (lrDatasetRows y "targets") -> panic "learn: features and targets must have equal rows"
+    args: lrArgs 8
+    set args 0 x
+    set args 1 y
+    set args 2 batchSize
+    set args 3 shuffle
+    set args 4 seed
+    set args 5 0
+    set args 6 0
+    set args 7 lrBatchOrder rows seed 0 shuffle
+    return to :learnBatcher args
+]
+
+nextBatch: function [iterator][
+    unless is? :learnBatcher iterator -> panic "learn: nextBatch expects a batcher"
+    rows: iterator\features\shape\0
+    if rows = 0 -> panic "learn: cannot iterate an empty dataset"
+    if iterator\position >= rows [
+        iterator\epoch: iterator\epoch + 1
+        iterator\position: 0
+        iterator\order: lrBatchOrder rows iterator\seed iterator\epoch iterator\shuffle
+    ]
+    stop: min @[rows (iterator\position + iterator\batchSize)]
+    indices: lrFreshBlock
+    loop iterator\position..(stop - 1) 'position -> 'indices ++ iterator\order\[position]
+    iterator\position: stop
+    return #[
+        features: lrTakeRows iterator\features indices
+        targets: lrTakeRows iterator\targets indices
+        indices: indices
+        epoch: iterator\epoch
+    ]
+]
+
+batcherState: function [iterator][
+    unless is? :learnBatcher iterator -> panic "learn: batcherState expects a batcher"
+    return #[format: "learn.batcher-state" version: "0.13" rows: iterator\features\shape\0 batchSize: iterator\batchSize shuffle: iterator\shuffle seed: iterator\seed epoch: iterator\epoch position: iterator\position order: new iterator\order]
+]
+
+lrValidateBatcherState: function [iterator state][
+    unless is? :learnBatcher iterator -> panic "learn: batcher state expects a batcher"
+    unless and? [dictionary? state][and? [key? state 'format][state\format = "learn.batcher-state"]] -> panic "learn: unsupported batcher state format"
+    unless and? [key? state 'version][state\version = "0.13"] -> panic "learn: unsupported batcher state version"
+    loop ['rows 'batchSize 'shuffle 'seed 'epoch 'position 'order] 'field [unless key? state field -> panic ~"learn: batcher state is missing |field|"]
+    rows: iterator\features\shape\0
+    unless state\rows = rows -> panic "learn: batcher state row count does not match"
+    unless state\batchSize = iterator\batchSize -> panic "learn: batcher state batch size does not match"
+    unless logical? state\shuffle -> panic "learn: batcher state shuffle flag is invalid"
+    unless integer? state\seed -> panic "learn: batcher state seed is invalid"
+    unless and? [integer? state\epoch][state\epoch >= 0] -> panic "learn: batcher state epoch is invalid"
+    unless and? [integer? state\position][and? [state\position >= 0][state\position =< rows]] -> panic "learn: batcher state position is invalid"
+    unless and? [block? state\order][(size state\order) = rows] -> panic "learn: batcher state order is invalid"
+    sortedOrder: sort new state\order
+    expected: lrBatchOrder rows 0 0 false
+    unless sortedOrder = expected -> panic "learn: batcher state order is not a permutation"
+    return state
+]
+
+loadBatcherState: function [iterator state][
+    valid: lrValidateBatcherState iterator state
+    iterator\shuffle: valid\shuffle
+    iterator\seed: valid\seed
+    iterator\epoch: valid\epoch
+    iterator\position: valid\position
+    iterator\order: new valid\order
+    return iterator
+]
+
+lrBatcherCheckpointPayload: function [state][
+    shuffleCode: 0
+    if state\shuffle -> shuffleCode: 1
+    return @[state\rows state\batchSize shuffleCode state\seed state\epoch state\position new state\order]
+]
+
+lrBatcherStateFromPayload: function [payload][
+    unless and? [block? payload][(size payload) = 7] -> panic "learn: malformed batcher checkpoint payload"
+    unless contains? [0 1] payload\2 -> panic "learn: malformed batcher shuffle flag"
+    shuffle: payload\2 = 1
+    return #[format: "learn.batcher-state" version: "0.13" rows: payload\0 batchSize: payload\1 shuffle: shuffle seed: payload\3 epoch: payload\4 position: payload\5 order: payload\6]
+]
+
+saveSessionCheckpoint: function [model optimizer iterator path][
+    modelPayload: lrModelCheckpointPayload stateDict model
+    optimizerPayload: lrOptimizerCheckpointPayload optimizerState optimizer
+    batcherPayload: lrBatcherCheckpointPayload batcherState iterator
+    payload: @[10013 modelPayload optimizerPayload batcherPayload]
+    write (to :string payload) path
+    return path
+]
+
+loadSessionCheckpoint: function [model optimizer iterator path][
+    payload: parse read path
+    unless and? [block? payload][(size payload) = 4] -> panic "learn: malformed session checkpoint payload"
+    unless payload\0 = 10013 -> panic "learn: unsupported session checkpoint header"
+    modelState: lrStateFromCheckpointPayload payload\1
+    optimizerStateValue: lrOptimizerStateFromCheckpointPayload payload\2 (size optimizer\parameterList)
+    batcherStateValue: lrBatcherStateFromPayload payload\3
+    validatedModel: lrValidateState model modelState true
+    validatedOptimizer: lrValidateOptimizerState optimizer optimizerStateValue
+    validatedBatcher: lrValidateBatcherState iterator batcherStateValue
+    lrApplyValidatedState validatedModel
+    lrApplyValidatedOptimizerState validatedOptimizer
+    loadBatcherState iterator validatedBatcher
+    return model
+]

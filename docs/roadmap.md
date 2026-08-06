@@ -12,7 +12,8 @@
 - v0.10: named model state, atomic strict restoration, and portable checkpoints.
 - v0.11: vector products and broadcasted batched matrix multiplication with gradients.
 - v0.12: optimizer state and atomic model-plus-optimizer training checkpoints.
+- v0.13: deterministic paired mini-batches and fully resumable training-session checkpoints.
 
 ## Next
 
-The next coherent milestone is deterministic mini-batch training: seeded shuffling, batch iteration, epoch state, and resumable training sessions layered over graphs and optimizer checkpoints.
+The next coherent milestone is a high-level training loop: named graph feeds, epoch/batch accounting, loss history, validation passes, and callback-based early stopping over resumable sessions.

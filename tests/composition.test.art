@@ -1,0 +1,138 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "model composition" [
+    test "discovers nested layer parameters with stable names" [
+        encoder: denseLayer.zeros.name: "encoder" 2 3
+        model: graph [
+            x: inputShape [1 2]
+            encoded: applyLayer encoder x
+            loss: mean encoded
+        ]
+        state: stateDict model
+        data: graphData model
+        assert -> 2 = size parameters model
+        assert -> ['encoder_weight 'encoder_bias] = state\parameters
+        assert -> ['encoder_weight 'encoder_bias] = data\parameters
+        assert -> ['x 'encoder_weight 'encoder_bias] <> inputs model
+        assert -> ['x] = inputs model
+        assert -> 'dense = data\nodes\encoded\operation
+    ]
+
+    test "deduplicates a shared layer across multiple uses" [
+        shared: denseLayer.zeros.name: "shared" 2 2
+        model: graph [
+            x: inputShape [1 2]
+            firstUse: applyLayer shared x
+            secondUse: applyLayer shared x
+            combined: firstUse + secondUse
+            loss: mean combined
+        ]
+        assert -> 2 = size parameters model
+        assert -> 2 = size parameters.group: 'shared model
+    ]
+
+    test "groups, freezes, and unfreezes layer parameters" [
+        encoder: denseLayer.zeros.name: "encoder" 2 2
+        head: denseLayer.zeros.name: "head" 2 1
+        encoder\weight\value\data: [1.0 1.0 1.0 1.0]
+        head\weight\value\data: [1.0 1.0]
+        model: graph [
+            x: inputShape [1 2]
+            hidden: applyLayer encoder x
+            output: applyLayer head hidden
+            loss: mean output
+        ]
+        groups: parameterGroups model
+        assert -> 2 = size groups\encoder
+        assert -> 2 = size groups\head
+        freezeGroup model 'encoder
+        assert -> 2 = size trainableParameters model
+
+        optimizer: sgd.rate: 0.1 (parameters model)
+        runtimeInput: tensor [[1.0 2.0]]
+        beforeEncoder: new encoder\weight\value\data
+        zeroGrad model
+        forward.with: #[x: runtimeInput] model
+        backward model\loss
+        step optimizer
+        assert -> beforeEncoder = encoder\weight\value\data
+        assert -> [0.7 0.7] = head\weight\value\data
+
+        unfreezeGroup model 'encoder
+        zeroGrad model
+        forward model
+        backward model\loss
+        step optimizer
+        assert -> not? beforeEncoder = encoder\weight\value\data
+        assert -> 4 = size trainableParameters model
+    ]
+
+    test "round-trips nested layer state" [
+        layer: denseLayer.zeros.name: "projection" 2 1
+        model: graph [x: inputShape [1 2] output: applyLayer layer x loss: mean output]
+        layer\weight\value\data: [2.0 3.0]
+        saved: stateDict model
+        layer\weight\value\data: [9.0 9.0]
+        loadStateDict model saved
+        assert -> [2.0 3.0] = layer\weight\value\data
+    ]
+
+    test "restores selective freezing from state and session checkpoints" [
+        layer: denseLayer.zeros.name: "frozen" 1 1
+        model: graph [
+            x: inputShape [1 1]
+            y: input
+            output: applyLayer layer x
+            residual: output - y
+            loss: mean square residual
+        ]
+        freezeGroup model 'frozen
+        state: trainabilityState model
+        unfreezeGroup model 'frozen
+        loadTrainabilityState model state
+        assert -> 0 = size trainableParameters model
+
+        optimizer: sgd (parameters model)
+        features: tensor [[1.0]]
+        targets: tensor [1.0]
+        iterator: batcher.size: 1.shuffle: false features targets
+        path: ".learn-composition-checkpoint-test.state"
+        saveSessionCheckpoint model optimizer iterator path
+        unfreezeGroup model 'frozen
+        loadSessionCheckpoint model optimizer iterator path
+        assert -> 0 = size trainableParameters model
+        restoredState: trainabilityState model
+        assert -> false = restoredState\parameters\0\trainable
+    ]
+
+    test "executes dense layer nodes in a CPU schedule" [
+        layer: denseLayer.zeros.name: "projection" 2 1
+        layer\weight\value\data: [2.0 3.0]
+        layer\bias\value\data: [1.0]
+        model: graph [x: inputShape [1 2] output: applyLayer layer x loss: mean output]
+        runtimeInput: tensor [[1.0 2.0] [3.0 4.0]]
+        feed: #[x: runtimeInput]
+        forward.with: feed model
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        scheduled: executeCpu.with: feed schedule
+        assert -> 14.0 = model\loss\value\data\0
+        assert -> 14.0 = scheduled\data\0
+    ]
+
+    test "validates layer construction and group selection" [
+        badInput?: throws? [denseLayer 0 2]
+        badOutput?: throws? [denseLayer 2 0]
+        layer: denseLayer.name: "only" 1 1
+        model: graph [x: inputShape [1 1] output: applyLayer layer x loss: mean output]
+        freezeParameters layer
+        assert -> 0 = size trainableParameters model
+        unfreezeParameters layer
+        assert -> 2 = size trainableParameters model
+        missingGroup?: throws? [freezeGroup model 'missing]
+        assert -> badInput?
+        assert -> badOutput?
+        assert -> missingGroup?
+    ]
+]

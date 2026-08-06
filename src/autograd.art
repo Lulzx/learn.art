@@ -98,6 +98,16 @@ lrValueDropout: function [value rate seed][
     return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'dropout parents: @[source] parameter: false context: context]
 ]
 
+lrValueDense: function [inputValue weight bias][
+    source: lrAsValue inputValue
+    weightValue: lrAsValue weight
+    biasValue: lrAsValue bias
+    linear: matmul source\value weightValue\value
+    result: lrTensorBinary linear biasValue\value 'add
+    requires: or? [source\requiresGradient][or? [weightValue\requiresGradient][biasValue\requiresGradient]]
+    return lrMakeValue #[value: result requiresGradient: requires operation: 'dense parents: @[source weightValue biasValue] parameter: false]
+]
+
 lrValueReduce: function [value operation requestedAxis][
     source: lrAsValue value
     result: null
@@ -226,8 +236,14 @@ lrMatmulGradients: function [left right up][
     return @[leftGradient rightGradient]
 ]
 
+lrParameterTrainable?: function [item][
+    if and? [dictionary? item\context][key? item\context 'trainable] -> return item\context\trainable
+    return item\requiresGradient
+]
+
 lrAccumulate: function [node contribution][
     unless node\requiresGradient -> return null
+    if and? [node\parameter][not? lrParameterTrainable? node] -> return null
     reduced: lrUnbroadcast contribution node\value\shape
     emptyGradient: null? node\gradient
     if emptyGradient -> node\gradient: reduced
@@ -281,6 +297,10 @@ lrForwardNode: function [node][
     if op = 'softmax -> node\value: lrTensorSoftmax node\parents\0\value
     if op = 'crossEntropy -> node\value: lrTensorCrossEntropy node\parents\0\value node\parents\1\value
     if op = 'dropout -> node\value: lrDropoutTensor node\parents\0\value node\context
+    if op = 'dense [
+        linear: matmul node\parents\0\value node\parents\1\value
+        node\value: lrTensorBinary linear node\parents\2\value 'add
+    ]
     if op = 'add -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'add
     if op = 'sub -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'sub
     if op = 'mul -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'mul
@@ -437,6 +457,12 @@ backward: function [output][
         if op = 'dropout [
             contribution: lrTensorBinary up node\context\mask 'mul
             lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'dense [
+            gradients: lrMatmulGradients node\parents\0\value node\parents\1\value up
+            lrAccumulate node\parents\0 gradients\0
+            lrAccumulate node\parents\1 gradients\1
+            lrAccumulate node\parents\2 up
         ]
         if op = 'pow [
             exponent: node\parents\1\value

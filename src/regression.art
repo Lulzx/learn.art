@@ -24,6 +24,7 @@ lrMatrixData: function [value label][
 ]
 
 dense: function [inputValue weight bias][
+    if or? [is? :learnValue inputValue][or? [is? :learnValue weight][is? :learnValue bias]] -> return lrValueDense inputValue weight bias
     linearValue: matmul inputValue weight
     return linearValue + bias
 ]

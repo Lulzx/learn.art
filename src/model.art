@@ -28,6 +28,10 @@ define :learnAdam [
     init: constructor [parameterList rate beta1 beta2 epsilon firstMoments secondMoments timestep]
 ]
 
+define :learnDenseLayer [
+    init: constructor [name weight bias]
+]
+
 ; `input` intentionally replaces Arturo's terminal-input word after import.
 ; In a graph block it constructs a symbolic, initially scalar placeholder.
 input: function [][
@@ -89,26 +93,61 @@ lrGraphNames: function [body][
 
 graph: function [body][
     unless block? body -> panic "learn: graph expects a block"
-    names: lrGraphNames body
-    if empty? names -> panic "learn: graph must contain labeled expressions"
+    bodyNames: lrGraphNames body
+    if empty? bodyNames -> panic "learn: graph must contain labeled expressions"
 
     ; The block runs in this call frame. Its labels therefore become visible
     ; through `symbols`, while references to the caller's tensors remain valid.
     do body
     scope: symbols
     graphValues: lrFreshDictionary
-    parameterList: lrFreshBlock
     inputList: lrFreshBlock
 
-    loop names 'name [
+    loop bodyNames 'name [
         unless key? scope name -> panic ~"learn: graph could not evaluate |name|"
         item: scope\[name]
         unless or? [is? :learnValue item][is? :learnTensor item] ->
             panic ~"learn: graph value |name| is not a tensor expression"
         set graphValues name item
-        if and? [is? :learnValue item][item\parameter] -> 'parameterList ++ @[item]
         if and? [is? :learnValue item][item\operation = 'input] -> 'inputList ++ @[name]
     ]
+
+    parameterList: lrFreshBlock
+    parameterNames: lrFreshBlock
+    nestedNames: lrFreshBlock
+    loop bodyNames 'name [
+        item: graphValues\[name]
+        if is? :learnValue item [
+            topoOrder: lrTopo item
+            loop topoOrder 'node [
+                if and? [node\parameter][not? lrContainsIdentity? parameterList node] [
+                    parameterName: null
+                    loop bodyNames 'candidate [
+                        candidateValue: graphValues\[candidate]
+                        if and? [is? :learnValue candidateValue][candidateValue\id = node\id] -> parameterName: candidate
+                    ]
+                    if null? parameterName [
+                        if and? [dictionary? node\context][key? node\context 'parameterName] -> parameterName: node\context\parameterName
+                        if null? parameterName -> parameterName: to :literal ~"parameter_|size parameterList|"
+                        if key? graphValues parameterName -> panic ~"learn: nested parameter name |parameterName| collides with a graph value"
+                        set graphValues parameterName node
+                        'nestedNames ++ parameterName
+                    ]
+                    if null? node\context -> node\context: #[parameterName: parameterName group: 'default]
+                    if dictionary? node\context [
+                        unless key? node\context 'parameterName -> set node\context 'parameterName parameterName
+                        unless key? node\context 'group -> set node\context 'group 'default
+                        unless key? node\context 'trainable -> set node\context 'trainable true
+                    ]
+                    'parameterList ++ @[node]
+                    'parameterNames ++ parameterName
+                ]
+            ]
+        ]
+    ]
+
+    names: new nestedNames
+    loop bodyNames 'name -> 'names ++ name
 
     args: lrArgs 7
     set args 0 graphValues
@@ -158,7 +197,160 @@ inputs: function [model][
 
 parameters: function [model][
     unless is? :learnGraph model -> panic "learn: parameters expects a graph"
+    requestedGroup: attr 'group
+    unless null? requestedGroup [
+        groupName: to :literal requestedGroup
+        groups: parameterGroups model
+        if key? groups groupName -> return groups\[groupName]
+        return lrFreshBlock
+    ]
     return model\parameterList
+]
+
+trainableParameters: function [model][
+    result: lrFreshBlock
+    loop parameters model 'item [if lrParameterTrainable? item -> 'result ++ @[item]]
+    return result
+]
+
+parameterGroups: function [model][
+    unless is? :learnGraph model -> panic "learn: parameterGroups expects a graph"
+    groups: lrFreshDictionary
+    loop model\parameterList 'item [
+        groupName: 'default
+        if and? [dictionary? item\context][key? item\context 'group] -> groupName: item\context\group
+        unless key? groups groupName -> set groups groupName lrFreshBlock
+        groupItems: groups\[groupName]
+        'groupItems ++ @[item]
+    ]
+    return groups
+]
+
+denseLayer: function [inputSize outputSize][
+    callAttrs: attrs
+    name: 'dense
+    makeZeros: key? callAttrs 'zeros
+    if key? callAttrs 'name -> name: to :literal callAttrs\name
+    unless and? [integer? inputSize][inputSize > 0] -> panic "learn: denseLayer input size must be positive"
+    unless and? [integer? outputSize][outputSize > 0] -> panic "learn: denseLayer output size must be positive"
+    weightName: to :literal ~"|name|_weight"
+    biasName: to :literal ~"|name|_bias"
+    weight: (makeZeros)? -> parameter.zeros @[inputSize outputSize] -> parameter.random @[inputSize outputSize]
+    bias: parameter.zeros @[outputSize]
+    weight\context: #[parameterName: weightName group: name trainable: true]
+    bias\context: #[parameterName: biasName group: name trainable: true]
+    args: lrArgs 3
+    set args 0 name
+    set args 1 weight
+    set args 2 bias
+    return to :learnDenseLayer args
+]
+
+applyLayer: function [layer inputValue][
+    unless is? :learnDenseLayer layer -> panic "learn: applyLayer expects a layer"
+    return lrValueDense inputValue layer\weight layer\bias
+]
+
+layerParameters: function [layer][
+    unless is? :learnDenseLayer layer -> panic "learn: layerParameters expects a layer"
+    return @[layer\weight layer\bias]
+]
+
+lrSetTrainable: function [target enabled][
+    if is? :learnDenseLayer target [
+        target\weight\context\trainable: enabled
+        target\bias\context\trainable: enabled
+        unless enabled [
+            target\weight\gradient: null
+            target\bias\gradient: null
+        ]
+        return target
+    ]
+    if is? :learnGraph target [
+        loop target\parameterList 'item [
+            item\context\trainable: enabled
+            unless enabled -> item\gradient: null
+        ]
+        return target
+    ]
+    items: lrFreshBlock
+    if block? target -> items: target
+    if and? [is? :learnValue target][target\parameter] -> items: @[target]
+    if empty? items -> panic "learn: freeze target has no parameters"
+    loop items 'item [
+        unless and? [is? :learnValue item][item\parameter] -> panic "learn: freeze expects parameters, a layer, or a graph"
+        if dictionary? item\context -> item\context\trainable: enabled
+        unless enabled -> item\gradient: null
+    ]
+    return target
+]
+
+freezeParameters: function [target][lrSetTrainable target false]
+
+unfreezeParameters: function [target][lrSetTrainable target true]
+
+freezeGroup: function [model groupName][
+    normalizedName: to :literal groupName
+    groups: parameterGroups model
+    unless key? groups normalizedName -> panic ~"learn: graph has no parameter group |normalizedName|"
+    loop model\parameterList 'item [
+        if item\context\group = normalizedName [
+            item\context\trainable: false
+            item\gradient: null
+        ]
+    ]
+    return model
+]
+
+unfreezeGroup: function [model groupName][
+    normalizedName: to :literal groupName
+    groups: parameterGroups model
+    unless key? groups normalizedName -> panic ~"learn: graph has no parameter group |normalizedName|"
+    loop model\parameterList 'item [if item\context\group = normalizedName -> item\context\trainable: true]
+    return model
+]
+
+trainabilityState: function [model][
+    unless is? :learnGraph model -> panic "learn: trainabilityState expects a graph"
+    entries: lrFreshBlock
+    loop model\parameterList 'item -> 'entries ++ @[#[name: item\context\parameterName trainable: lrParameterTrainable? item]]
+    return #[format: "learn.trainability-state" version: "0.19" parameters: entries]
+]
+
+lrValidateTrainabilityState: function [model state][
+    unless is? :learnGraph model -> panic "learn: trainability state expects a graph"
+    unless and? [dictionary? state][and? [key? state 'format][state\format = "learn.trainability-state"]] -> panic "learn: unsupported trainability state format"
+    unless and? [key? state 'version][state\version = "0.19"] -> panic "learn: unsupported trainability state version"
+    unless and? [key? state 'parameters][block? state\parameters] -> panic "learn: trainability parameters are invalid"
+    unless (size state\parameters) = (size model\parameterList) -> panic "learn: trainability parameter count does not match"
+    live: lrFreshDictionary
+    loop model\parameterList 'item -> set live item\context\parameterName item
+    seen: lrFreshDictionary
+    validated: lrFreshBlock
+    loop state\parameters 'entry [
+        unless and? [dictionary? entry][and? [key? entry 'name][key? entry 'trainable]] -> panic "learn: trainability entry is malformed"
+        name: to :literal entry\name
+        unless key? live name -> panic ~"learn: graph has no parameter named |name|"
+        if key? seen name -> panic ~"learn: duplicate trainability parameter |name|"
+        unless logical? entry\trainable -> panic ~"learn: trainability flag for |name| is invalid"
+        set seen name true
+        'validated ++ @[#[parameter: live\[name] trainable: entry\trainable]]
+    ]
+    return validated
+]
+
+lrApplyValidatedTrainabilityState: function [validated][
+    loop validated 'entry [
+        entry\parameter\context\trainable: entry\trainable
+        unless entry\trainable -> entry\parameter\gradient: null
+    ]
+    return null
+]
+
+loadTrainabilityState: function [model state][
+    validated: lrValidateTrainabilityState model state
+    lrApplyValidatedTrainabilityState validated
+    return model
 ]
 
 forward: function [model][
@@ -263,8 +455,8 @@ graphData: function [model][
     loop model\names 'name [
         nodeData: lrGraphNodeData model name
         set nodes name nodeData
-        if nodeData\role = 'parameter -> 'parameterNames ++ @[name]
     ]
+    loop model\parameterList 'item -> 'parameterNames ++ item\context\parameterName
     return #[
         format: "learn.graph"
         version: "0.2"
@@ -371,6 +563,7 @@ step: function [optimizer][
     itemCount: size optimizer\parameterList
     if itemCount > 0 [loop 0..(itemCount - 1) 'i [
         item: optimizer\parameterList\[i]
+        unless lrParameterTrainable? item -> continue
         if null? item\gradient -> panic "learn: cannot step a parameter without a gradient"
         update: null
 

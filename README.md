@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.18 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass learning, explicit regularization modes, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.19 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass learning, reusable layers and selective freezing, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -90,6 +90,12 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 
 `l1Penalty.rate:` and `l2Penalty.rate:` return differentiable scalar penalties for a non-empty parameter block. Add them to an ordinary data loss inside a graph. `regularizationState` and `loadRegularizationState` preserve dropout counters and mode; v0.18 session checkpoints include that state automatically, with or without a learning-rate scheduler.
 
+## Model composition
+
+`denseLayer.name: "encoder" inputSize outputSize` creates a reusable weight/bias pair, and `applyLayer layer input` inserts a first-class differentiable dense node. A graph discovers reachable layer parameters even when they are not repeated as graph labels, deduplicates shared layers by identity, and exposes stable names such as `encoder_weight` and `encoder_bias` in graph data and checkpoints.
+
+`parameterGroups model` groups parameters by layer name; `parameters.group:` selects a group and `trainableParameters` filters frozen values. Use `freezeParameters`/`unfreezeParameters` for a layer, graph, or parameter block and `freezeGroup`/`unfreezeGroup` for graph-owned groups. Optimizers retain frozen slots but skip updates. `trainabilityState` is included automatically in v0.19 session checkpoints.
+
 ## Graph transformations
 
 `validateGraphData`, `deadCodeEliminate`, `commonSubexpressions`, and `optimizeGraph` analyze or rewrite the plain dictionary returned by `graphData`. `graphDot` exports the same representation for Graphviz visualization. These passes preserve the live eager graph and make lazy execution work explicit at the data boundary.
@@ -111,6 +117,7 @@ arturo examples/training-loop.art
 arturo examples/preprocessing.art
 arturo examples/multiclass.art
 arturo examples/regularization.art
+arturo examples/composition.art
 arturo examples/native-cpu.art
 ```
 

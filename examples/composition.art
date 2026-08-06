@@ -1,0 +1,33 @@
+import relative {../src/learn}!
+
+features: tensor [[0.0 0.0] [1.0 0.0] [0.0 1.0] [1.0 1.0]]
+targets: tensor [[0.0] [1.0] [1.0] [2.0]]
+
+encoder: denseLayer.name: "encoder" 2 4
+head: denseLayer.name: "head" 4 1
+
+model: graph [
+    x: inputShape [1 2]
+    y: inputShape [1 1]
+    hiddenLinear: applyLayer encoder x
+    hidden: tensorTanh hiddenLinear
+    prediction: applyLayer head hidden
+    residual: prediction - y
+    loss: mean square residual
+]
+
+optimizer: adam.rate: 0.03 (parameters model)
+iterator: batcher.size: 2.seed: 5 features targets
+
+freezeGroup model "encoder"
+frozenHistory: train.epochs: 40 model optimizer iterator
+unfreezeGroup model "encoder"
+fineTuneHistory: train.epochs: 120 model optimizer iterator
+
+evalMode model
+forward.with: #[x: features y: targets] model
+groups: parameterGroups model
+print ~"parameter groups: |keys groups|"
+print ~"predictions: |model\prediction|"
+print ~"frozen final: |last frozenHistory\epochs|"
+print ~"fine-tuned final: |last fineTuneHistory\epochs|"

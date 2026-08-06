@@ -112,6 +112,10 @@ lrExecuteDataNode: function [node parentValues][
     if operation = 'softmax -> return lrTensorSoftmax parentValues\0
     if operation = 'crossEntropy -> return lrTensorCrossEntropy parentValues\0 parentValues\1
     if operation = 'dropout -> return lrDropoutTensor parentValues\0 node\context
+    if operation = 'dense [
+        linear: matmul parentValues\0 parentValues\1
+        return lrTensorBinary linear parentValues\2 'add
+    ]
     if operation = 'add -> return lrTensorBinary parentValues\0 parentValues\1 'add
     if operation = 'sub -> return lrTensorBinary parentValues\0 parentValues\1 'sub
     if operation = 'mul -> return lrTensorBinary parentValues\0 parentValues\1 'mul

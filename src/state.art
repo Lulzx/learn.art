@@ -5,10 +5,7 @@ import relative {./native}!
 lrNamedParameters: function [model][
     unless is? :learnGraph model -> panic "learn: model state expects a graph"
     result: lrFreshDictionary
-    loop model\names 'name [
-        item: model\values\[name]
-        if and? [is? :learnValue item][item\parameter] -> set result name item
-    ]
+    loop model\parameterList 'item -> set result item\context\parameterName item
     return result
 ]
 
@@ -16,14 +13,12 @@ stateDict: function [model][
     named: lrNamedParameters model
     names: lrFreshBlock
     valuesByName: lrFreshDictionary
-    loop model\names 'name [
-        if key? named name [
-            item: named\[name]
-            'names ++ name
-            set valuesByName name #[
-                shape: new item\value\shape
-                buffer: tensorBuffer item\value
-            ]
+    loop model\parameterList 'item [
+        name: item\context\parameterName
+        'names ++ name
+        set valuesByName name #[
+            shape: new item\value\shape
+            buffer: tensorBuffer item\value
         ]
     ]
     return #[
@@ -43,7 +38,7 @@ lrValidateState: function [model state strict][
 
     named: lrNamedParameters model
     expectedNames: lrFreshBlock
-    loop model\names 'name [if key? named name -> 'expectedNames ++ name]
+    loop model\parameterList 'item -> 'expectedNames ++ item\context\parameterName
     seenStateNames: lrFreshBlock
     loop state\parameters 'name [
         if contains? seenStateNames name -> panic ~"learn: model state repeats parameter |name|"

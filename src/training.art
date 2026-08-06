@@ -15,6 +15,7 @@ gradientNorm: function [parameterList][
     squaredTotal: 0.0
     loop parameterList 'item [
         unless and? [is? :learnValue item][item\parameter] -> panic "learn: gradientNorm expects parameter values"
+        unless lrParameterTrainable? item -> continue
         if null? item\gradient -> panic "learn: cannot measure a parameter without a gradient"
         loop item\gradient\data 'component -> squaredTotal: squaredTotal + (component * component)
     ]
@@ -27,7 +28,7 @@ clipGradNorm: function [parameterList][
     norm: gradientNorm parameterList
     if norm > maximum [
         scale: maximum / norm
-        loop parameterList 'item -> item\gradient: lrTensorBinary item\gradient scale 'mul
+        loop parameterList 'item [if lrParameterTrainable? item -> item\gradient: lrTensorBinary item\gradient scale 'mul]
     ]
     return norm
 ]
@@ -161,6 +162,26 @@ lrRegularizationStateFromPayload: function [payload][
         'nodes ++ @[#[name: to :literal to :string row\0 rate: row\1 seed: row\2 pass: row\3]]
     ]
     return #[format: "learn.regularization-state" version: "0.18" training: payload\0 = 1 nodes: nodes]
+]
+
+lrTrainabilityCheckpointPayload: function [state][
+    rows: lrFreshBlock
+    loop state\parameters 'entry [
+        flag: (entry\trainable)? -> 1 -> 0
+        'rows ++ @[@[entry\name flag]]
+    ]
+    return rows
+]
+
+lrTrainabilityStateFromPayload: function [payload][
+    unless block? payload -> panic "learn: malformed trainability checkpoint payload"
+    entries: lrFreshBlock
+    loop payload 'row [
+        unless and? [block? row][(size row) = 2] -> panic "learn: malformed trainability row"
+        unless contains? [0 1] row\1 -> panic "learn: malformed trainability flag"
+        'entries ++ @[#[name: to :literal to :string row\0 trainable: row\1 = 1]]
+    ]
+    return #[format: "learn.trainability-state" version: "0.19" parameters: entries]
 ]
 
 lrDatasetRows: function [value label][
@@ -314,6 +335,8 @@ saveSessionCheckpoint: function [model optimizer iterator path][
     batcherPayload: lrBatcherCheckpointPayload batcherState iterator
     savedRegularizationState: regularizationState model
     regularizationPayload: lrRegularizationCheckpointPayload savedRegularizationState
+    savedTrainabilityState: trainabilityState model
+    trainabilityPayload: lrTrainabilityCheckpointPayload savedTrainabilityState
     schedulerPayload: lrFreshBlock
     if key? callAttrs 'scheduler [
         unless is? :learnStepLr callAttrs\scheduler -> panic "learn: checkpoint scheduler must be a learning-rate scheduler"
@@ -321,7 +344,7 @@ saveSessionCheckpoint: function [model optimizer iterator path][
         savedSchedulerState: schedulerState callAttrs\scheduler
         schedulerPayload: lrSchedulerCheckpointPayload savedSchedulerState
     ]
-    payload: @[10018 modelPayload optimizerPayload batcherPayload regularizationPayload schedulerPayload]
+    payload: @[10019 modelPayload optimizerPayload batcherPayload regularizationPayload schedulerPayload trainabilityPayload]
     write (to :string payload) path
     return path
 ]
@@ -330,8 +353,8 @@ loadSessionCheckpoint: function [model optimizer iterator path][
     callAttrs: attrs
     payload: parse read path
     unless and? [block? payload][not? empty? payload] -> panic "learn: malformed session checkpoint payload"
-    unless contains? [10013 10015 10018] payload\0 -> panic "learn: unsupported session checkpoint header"
-    expectedSize: (payload\0 = 10013)? -> 4 -> (payload\0 = 10015)? -> 5 -> 6
+    unless contains? [10013 10015 10018 10019] payload\0 -> panic "learn: unsupported session checkpoint header"
+    expectedSize: (payload\0 = 10013)? -> 4 -> (payload\0 = 10015)? -> 5 -> (payload\0 = 10018)? -> 6 -> 7
     unless (size payload) = expectedSize -> panic "learn: malformed session checkpoint payload"
     modelState: lrStateFromCheckpointPayload payload\1
     optimizerStateValue: lrOptimizerStateFromCheckpointPayload payload\2 (size optimizer\parameterList)
@@ -348,7 +371,7 @@ loadSessionCheckpoint: function [model optimizer iterator path][
         validatedScheduler: lrValidateSchedulerState callAttrs\scheduler schedulerStateValue
     ]
     validatedRegularization: null
-    if payload\0 = 10018 [
+    if contains? [10018 10019] payload\0 [
         regularizationStateValue: lrRegularizationStateFromPayload payload\4
         validatedRegularization: lrValidateRegularizationState model regularizationStateValue
         unless and? [block? payload\5][empty? payload\5] [
@@ -359,11 +382,17 @@ loadSessionCheckpoint: function [model optimizer iterator path][
             validatedScheduler: lrValidateSchedulerState callAttrs\scheduler schedulerStateValue
         ]
     ]
+    validatedTrainability: null
+    if payload\0 = 10019 [
+        trainabilityStateValue: lrTrainabilityStateFromPayload payload\6
+        validatedTrainability: lrValidateTrainabilityState model trainabilityStateValue
+    ]
     lrApplyValidatedState validatedModel
     lrApplyValidatedOptimizerState validatedOptimizer
     loadBatcherState iterator validatedBatcher
     unless null? validatedScheduler -> loadSchedulerState callAttrs\scheduler validatedScheduler
     unless null? validatedRegularization -> lrApplyValidatedRegularizationState validatedRegularization
+    unless null? validatedTrainability -> lrApplyValidatedTrainabilityState validatedTrainability
     return model
 ]
 

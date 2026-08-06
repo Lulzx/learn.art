@@ -18,7 +18,8 @@
 - v0.16: fitted standardization, reversible transform pipelines, and portable preprocessing state.
 - v0.17: stable softmax and cross entropy, shaped inputs, class prediction, and multiclass accuracy.
 - v0.18: seeded inverted dropout, explicit train/eval mode, resumable regularization state, and L1/L2 penalties.
+- v0.19: reusable dense layers, nested parameter discovery, named groups, and resumable selective freezing.
 
 ## Next
 
-The next coherent milestone is model composition: reusable layer builders, named parameter groups, and selective freezing for transfer-style training.
+The next coherent milestone is reproducible initialization: seeded Xavier/He strategies, parameter reset APIs, and initializer metadata for repeatable model construction.

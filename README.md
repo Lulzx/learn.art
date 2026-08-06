@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.6 combines a small tensor/autograd runtime with inspectable models, neural composition, graph transformations, and executable CPU schedules.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.7 combines a small tensor/autograd runtime with inspectable models, neural composition, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -67,6 +67,8 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 
 `scheduleGraph data 'loss` applies constant folding, alias-preserving CSE, output pruning, and elementwise fusion planning. `executeCpu.with: feeds schedule` evaluates that immutable parameter snapshot using the pure-Arturo CPU reference backend.
 
+`compileNativeCpu schedule` lowers eligible fusion groups to generated C when `clang` is available. `executeNativeCpu.with: feeds artifact` uses those kernels and automatically falls back to the reference backend for unsupported groups or dynamic shapes.
+
 ## Development
 
 The package requires Arturo 0.10.0 and uses [unitt](https://github.com/RickBarretto/unitt):
@@ -76,6 +78,7 @@ arturo -p install unitt
 ~/.arturo/packages/bin/unitt --no-color
 arturo examples/linear.art
 arturo examples/regression.art
+arturo examples/native-cpu.art
 ```
 
 GPU execution, ranks above two, mixed dtypes, views, mutation APIs, and native backends remain outside the current milestone.

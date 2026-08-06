@@ -1,0 +1,18 @@
+import relative {../src/learn}!
+
+xNode: lrInputFrom tensor.zeros [3]
+model: graph [
+    x: xNode
+    scale: parameter 2.0
+    scaled: x * scale
+    activated: sigmoid scaled
+    loss: mean activated
+]
+
+data: graphData model
+schedule: scheduleGraph data 'loss
+artifact: compileNativeCpu schedule
+feed: #[x: tensor [0.0 1.0 2.0]]
+
+print executeNativeCpu.with: feed artifact
+print artifact\native

@@ -1,0 +1,83 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "native CPU lowering" [
+    test "compiles an eligible fusion group and matches reference execution" [
+        xNode: lrInputFrom tensor [0.0 0.0 0.0]
+        model: graph [
+            x: xNode
+            w: parameter 2.0
+            multiplied: x * w
+            activated: sigmoid multiplied
+            loss: mean activated
+        ]
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        artifact: compileNativeCpu.directory: ".learn-native-test" schedule
+        feed: #[x: tensor [0.0 1.0 2.0]]
+        nativeResult: executeNativeCpu.with: feed artifact
+        referenceResult: executeCpu.with: feed schedule
+        difference: abs nativeResult\data\0 - referenceResult\data\0
+        assert -> "learn.cpu.csv.v1" = artifact\abi
+        assert -> artifact\native
+        assert -> 1 = size keys artifact\kernels
+        assert -> difference < 0.000000000001
+    ]
+
+    test "falls back when runtime input shapes differ" [
+        xNode: lrInputFrom tensor [0.0 0.0]
+        model: graph [
+            x: xNode
+            w: parameter 2.0
+            prediction: x * w
+            loss: mean prediction
+        ]
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        artifact: compileNativeCpu.directory: ".learn-native-test" schedule
+        feed: #[x: tensor [1.0 2.0 3.0]]
+        nativeResult: executeNativeCpu.with: feed artifact
+        referenceResult: executeCpu.with: feed schedule
+        fullResult: executeNativeCpu.all.with: feed artifact
+        assert -> referenceResult\data = nativeResult\data
+        assert -> key? fullResult\values 'prediction
+    ]
+
+    test "marks groups with more than two external tensors for fallback" [
+        aNode: lrInputFrom tensor [0.0 0.0]
+        bNode: lrInputFrom tensor [0.0 0.0]
+        cNode: lrInputFrom tensor [0.0 0.0]
+        model: graph [
+            a: aNode
+            b: bNode
+            c: cNode
+            pair: a + b
+            total: pair + c
+            loss: mean total
+        ]
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        artifact: compileNativeCpu.directory: ".learn-native-test" schedule
+        feed: #[a: tensor [1.0 2.0] b: tensor [3.0 4.0] c: tensor [5.0 6.0]]
+        result: executeNativeCpu.with: feed artifact
+        fallbackCount: size artifact\fallbackGroups
+        assert -> 1 = fallbackCount
+        assert -> 10.5 = result\data\0
+    ]
+
+    test "falls back when the requested compiler is unavailable" [
+        xNode: lrInputFrom tensor [0.0 0.0]
+        model: graph [
+            x: xNode
+            scale: parameter 2.0
+            prediction: x * scale
+        ]
+        data: graphData model
+        schedule: scheduleGraph data 'prediction
+        artifact: compileNativeCpu.compiler: "learn-missing-compiler" schedule
+        feed: #[x: tensor [2.0 3.0]]
+        result: executeNativeCpu.with: feed artifact
+        assert -> not? artifact\native
+        assert -> [4.0 6.0] = result\data
+    ]
+]

@@ -1,0 +1,24 @@
+import relative {../src/learn}!
+
+values: lrFreshBlock
+loop 0..1023 'i -> 'values ++ to :floating i
+xData: tensor values
+xNode: lrInputFrom tensor.zeros [1024]
+
+model: graph [
+    x: xNode
+    scale: parameter 0.001
+    scaled: x * scale
+    activated: sigmoid scaled
+    loss: mean activated
+]
+
+data: graphData model
+schedule: scheduleGraph data 'loss
+artifact: compileNativeCpu schedule
+feed: #[x: xData]
+
+print "reference CPU"
+benchmark [do.times: 100 [executeCpu.with: feed schedule]]
+print "native CPU"
+benchmark [do.times: 100 [executeNativeCpu.with: feed artifact]]

@@ -1,0 +1,317 @@
+; Native CPU lowering for eligible v0.6 fusion groups.
+
+import relative {./transform}!
+
+lrNativeGroupPlan: function [data group][
+    externalParents: lrFreshBlock
+    eligible: not? empty? group
+    outputName: last group
+    outputCount: lrCount data\nodes\[outputName]\shape
+    if outputCount = 0 -> eligible: false
+
+    loop group 'name [
+        node: data\nodes\[name]
+        unless lrFusibleOperation? node\operation -> eligible: false
+        unless (lrCount node\shape) = outputCount -> eligible: false
+        loop node\parents 'parent [
+            if literal? parent [
+                unless contains? group parent [
+                    unless contains? externalParents parent -> 'externalParents ++ parent
+                    parentCount: lrCount data\nodes\[parent]\shape
+                    unless contains? @[1 outputCount] parentCount -> eligible: false
+                ]
+            ]
+            unless literal? parent [
+                inlineValue: lrTensorFromRecord parent\value
+                unless (size inlineValue\data) = 1 -> eligible: false
+            ]
+        ]
+    ]
+    if (size externalParents) > 2 -> eligible: false
+
+    ; Only the final value may escape the group. This lets the native ABI
+    ; return one tensor while preserving all downstream semantics.
+    loop data\order 'consumerName [
+        unless contains? group consumerName [
+            consumer: data\nodes\[consumerName]
+            loop consumer\parents 'parent [
+                if and? [literal? parent][and? [contains? group parent][parent <> outputName]] -> eligible: false
+            ]
+        ]
+    ]
+
+    return #[eligible: eligible externalParents: externalParents output: outputName count: outputCount]
+]
+
+lrNativeParentExpression: function [data group variables externalSlots parent][
+    if literal? parent [
+        if contains? group parent -> return variables\[parent]
+        slot: externalSlots\[parent]
+        parentCount: lrCount data\nodes\[parent]\shape
+        indexCode: (parentCount = 1)? -> "0" -> "i"
+        return ~"learn_input|slot|[|indexCode|]"
+    ]
+    inlineValue: lrTensorFromRecord parent\value
+    inlineItem: inlineValue\data\0
+    return to :string inlineItem
+]
+
+lrNativeCExpression: function [operation arguments][
+    a: arguments\0
+    if operation = 'alias -> return a
+    if operation = 'neg -> return ~"(-(|a|))"
+    if operation = 'exp -> return ~"exp(|a|)"
+    if operation = 'log -> return ~"log(|a|)"
+    if operation = 'sigmoid -> return ~"learn_sigmoid(|a|)"
+    if operation = 'relu -> return ~"((|a|) > 0.0 ? (|a|) : 0.0)"
+    if operation = 'tanh -> return ~"tanh(|a|)"
+    b: arguments\1
+    if operation = 'add -> return ~"((|a|) + (|b|))"
+    if operation = 'sub -> return ~"((|a|) - (|b|))"
+    if operation = 'mul -> return ~"((|a|) * (|b|))"
+    if operation = 'div -> return ~"((|a|) / (|b|))"
+    if operation = 'pow -> return ~"pow((|a|), (|b|))"
+    panic ~"learn: cannot lower native operation |operation|"
+]
+
+lrNativeSource: function [data group plan][
+    lines: @[
+        "#include <math.h>"
+        "#include <stddef.h>"
+        "#include <stdio.h>"
+        "#include <stdlib.h>"
+        ""
+        "static void learn_parse(const char *text, double *output, size_t count) {"
+        "    const char *cursor = text;"
+        "    for (size_t i = 0; i < count; ++i) {"
+        "        char *end = NULL;"
+        "        output[i] = strtod(cursor, &end);"
+        "        cursor = (*end == ',') ? end + 1 : end;"
+        "    }"
+        "}"
+        ""
+        "static double learn_sigmoid(double value) {"
+        "    if (value >= 0.0) return 1.0 / (1.0 + exp(-value));"
+        "    double positive = exp(value);"
+        "    return positive / (1.0 + positive);"
+        "}"
+        ""
+        "const char *learn_kernel(const char *source0, const char *source1) {"
+    ]
+
+    externalSlots: lrFreshDictionary
+    slot: 0
+    loop plan\externalParents 'parent [
+        set externalSlots parent slot
+        parentCount: lrCount data\nodes\[parent]\shape
+        'lines ++ ~"    double learn_input|slot|[|parentCount|];"
+        'lines ++ ~"    learn_parse(source|slot|, learn_input|slot|, |parentCount|);"
+        slot: slot + 1
+    ]
+    'lines ++ ~"    static char learn_output[|plan\count * 64 + 1|];"
+    'lines ++ "    char *cursor = learn_output;"
+    'lines ++ "    size_t remaining = sizeof(learn_output);"
+    'lines ++ ~"    for (size_t i = 0; i < |plan\count|; ++i) {"
+
+    variables: lrFreshDictionary
+    variableIndex: 0
+    loop group 'name [
+        node: data\nodes\[name]
+        arguments: lrFreshBlock
+        loop node\parents 'parent [
+            parentExpression: lrNativeParentExpression data group variables externalSlots parent
+            'arguments ++ @[parentExpression]
+        ]
+        expression: lrNativeCExpression node\operation arguments
+        variableName: ~"value_|variableIndex|"
+        'lines ++ ~"        double |variableName| = |expression|;"
+        set variables name variableName
+        variableIndex: variableIndex + 1
+    ]
+
+    outputVariable: variables\[plan\output]
+    'lines ++ ~"        int written = snprintf(cursor, remaining, (i + 1 < |plan\count|) ? \"%.17g,\" : \"%.17g\", |outputVariable|);"
+    'lines ++ "        if (written < 0 || (size_t)written >= remaining) return NULL;"
+    'lines ++ "        cursor += written;"
+    'lines ++ "        remaining -= (size_t)written;"
+    'lines ++ "    }"
+    'lines ++ "    return learn_output;"
+    'lines ++ "}"
+    return join.with: "\n" lines
+]
+
+lrNativeExtension: function [][
+    if sys\os = 'macos -> return ".dylib"
+    if sys\os = 'linux -> return ".so"
+    return null
+]
+
+compileNativeCpu: function [schedule][
+    callAttrs: attrs
+    unless and? [dictionary? schedule][schedule\format = "learn.schedule"] ->
+        panic "learn: compileNativeCpu expects a CPU schedule"
+
+    buildDirectory: ".learn-native"
+    if key? callAttrs 'directory -> buildDirectory: callAttrs\directory
+    compiler: "clang"
+    if key? callAttrs 'compiler -> compiler: callAttrs\compiler
+    required: key? callAttrs 'required
+    extension: lrNativeExtension
+    kernels: lrFreshDictionary
+    fallbackGroups: lrFreshBlock
+
+    if null? extension [
+        if required -> panic "learn: native CPU compilation is unsupported on this platform"
+        return #[format: "learn.native" version: "0.7" abi: "learn.cpu.csv.v1" native: false schedule: schedule kernels: kernels fallbackGroups: new schedule\fusionGroups]
+    ]
+
+    compilerCheck: execute.code.args: @["--version"] compiler
+    if compilerCheck\code <> 0 [
+        if required -> panic ~"learn: native CPU compiler |compiler| is unavailable"
+        return #[format: "learn.native" version: "0.7" abi: "learn.cpu.csv.v1" native: false schedule: schedule kernels: kernels fallbackGroups: new schedule\fusionGroups]
+    ]
+    unless directory? buildDirectory -> write.directory "" buildDirectory
+
+    data: schedule\graph
+    nativeCount: 0
+    loop schedule\fusionGroups 'group [
+        plan: lrNativeGroupPlan data group
+        if plan\eligible [
+            identity: crc to :string @[group data\nodes]
+            stem: ~"learn_kernel_|identity|"
+            sourcePath: ~"|buildDirectory|/|stem|.c"
+            libraryPath: ~"|buildDirectory|/|stem||extension|"
+            source: lrNativeSource data group plan
+            if file? sourcePath -> delete sourcePath
+            if file? libraryPath -> delete libraryPath
+            write source sourcePath
+            compileArgs: (sys\os = 'macos)? -> @["-dynamiclib" "-O3" sourcePath "-o" libraryPath "-lm"] -> @["-shared" "-fPIC" "-O3" sourcePath "-o" libraryPath "-lm"]
+            compileResult: execute.code.args: compileArgs compiler
+            if compileResult\code = 0 [
+                firstName: first group
+                set kernels firstName #[
+                    library: libraryPath
+                    symbol: "learn_kernel"
+                    nodes: new group
+                    externalParents: plan\externalParents
+                    output: plan\output
+                    shape: new data\nodes\[plan\output]\shape
+                    source: sourcePath
+                ]
+                nativeCount: nativeCount + 1
+            ]
+            if compileResult\code <> 0 [
+                if required -> panic ~"learn: native CPU compilation failed: |compileResult\output|"
+                'fallbackGroups ++ @[group]
+            ]
+        ]
+        unless plan\eligible -> 'fallbackGroups ++ @[group]
+    ]
+    return #[
+        format: "learn.native"
+        version: "0.7"
+        abi: "learn.cpu.csv.v1"
+        native: nativeCount > 0
+        schedule: schedule
+        kernels: kernels
+        fallbackGroups: fallbackGroups
+    ]
+]
+
+lrTensorCsv: function [value][
+    source: lrAsTensor value
+    csvParts: lrFreshBlock
+    loop source\data 'item [
+        textItem: to :string item
+        'csvParts ++ textItem
+    ]
+    return join.with: "," csvParts
+]
+
+lrTensorFromCsv: function [dims content][
+    spacedContent: replace content "," " "
+    csvParts: to :block spacedContent
+    csvValues: lrFreshBlock
+    loop csvParts 'item [
+        numericItem: to :floating item
+        'csvValues ++ numericItem
+    ]
+    return lrMakeTensor dims csvValues
+]
+
+lrExecuteNativeKernel: function [kernel environment][
+    arguments: @["" ""]
+    index: 0
+    loop kernel\externalParents 'parent [
+        parentValue: environment\[parent]
+        csvValue: lrTensorCsv parentValue
+        set arguments index csvValue
+        index: index + 1
+    ]
+    result: call.external: kernel\library .expect: :string kernel\symbol arguments
+    if null? result -> panic "learn: native CPU kernel returned no data"
+    return lrTensorFromCsv kernel\shape result
+]
+
+executeNativeCpu: function [artifact][
+    callAttrs: attrs
+    unless and? [dictionary? artifact][artifact\format = "learn.native"] ->
+        panic "learn: executeNativeCpu expects a native artifact"
+    schedule: artifact\schedule
+    feeds: lrFreshDictionary
+    if key? callAttrs 'with -> feeds: callAttrs\with
+    if key? callAttrs 'all -> return executeCpu.all.with: feeds schedule
+    unless artifact\native -> return executeCpu.with: feeds schedule
+
+    data: schedule\graph
+    loop keys feeds 'feedName [
+        unless contains? data\inputs to :literal feedName -> panic ~"learn: native CPU schedule has no input named |feedName|"
+    ]
+    environment: lrFreshDictionary
+
+    loop schedule\steps 'scheduledStep [
+        firstName: scheduledStep\nodes\0
+        if and? [scheduledStep\kind = 'fusion][key? artifact\kernels firstName] [
+            kernel: artifact\kernels\[firstName]
+            shapeMatches: true
+            loop kernel\externalParents 'parent [
+                if key? environment parent [
+                    expectedShape: data\nodes\[parent]\shape
+                    unless environment\[parent]\shape = expectedShape -> shapeMatches: false
+                ]
+            ]
+            if shapeMatches [
+                nativeValue: lrExecuteNativeKernel kernel environment
+                nativeOutputName: kernel\output
+                set environment nativeOutputName nativeValue
+            ]
+            unless shapeMatches [
+                loop scheduledStep\nodes 'name [
+                    node: data\nodes\[name]
+                    parentValues: lrFreshBlock
+                    loop node\parents 'parent -> 'parentValues ++ @[lrParentValue environment parent]
+                    referenceValue: lrExecuteDataNode node parentValues
+                    set environment name referenceValue
+                ]
+            ]
+        ]
+        unless and? [scheduledStep\kind = 'fusion][key? artifact\kernels firstName] [
+            loop scheduledStep\nodes 'name [
+                node: data\nodes\[name]
+                value: null
+                if node\role = 'input [
+                    unless key? feeds name -> panic ~"learn: native CPU input |name| has not been provided"
+                    value: lrAsTensor feeds\[name]
+                ]
+                if contains? ['parameter 'constant] node\role -> value: lrTensorFromRecord node\value
+                if or? [node\role = 'operation][node\role = 'alias] [
+                    parentValues: lrFreshBlock
+                    loop node\parents 'parent -> 'parentValues ++ @[lrParentValue environment parent]
+                    value: lrExecuteDataNode node parentValues
+                ]
+                set environment name value
+            ]
+        ]
+    ]
+    return environment\[schedule\output]
+]

@@ -6,7 +6,8 @@
 - v0.4: neural activations, stateful optimizers, dense MLPs.
 - v0.5: graph validation, pruning, duplicate discovery, DOT export.
 - v0.6: constant folding, CSE aliases, fusion schedules, CPU execution.
+- v0.7: optional compiled CPU fusion kernels with reference fallback.
 
 ## Next
 
-The next coherent milestone is native kernel lowering: benchmark the v0.6 reference schedule, define a stable backend ABI, lower fused groups to compiled CPU kernels, and compare every result against `executeCpu`. Higher-rank tensors, views, devices, and GPU kernels should follow only after that path is measurable and correct.
+The next coherent milestone is tensor generalization: ranks above two, explicit axis reductions, shape inference, and view-safe indexing. GPU and device work should follow only after those semantics are shared by eager, reference, and native CPU execution.

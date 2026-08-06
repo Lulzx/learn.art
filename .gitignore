@@ -1,1 +1,6 @@
 .unitt/
+.learn-native/
+.learn-native-test/
+native/*.dylib
+native/*.so
+native/*.dll

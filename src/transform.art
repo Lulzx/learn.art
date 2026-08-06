@@ -1,0 +1,102 @@
+; Graph analysis and transformations over the ordinary-data representation.
+
+import relative {./model}!
+
+validateGraphData: function [data][
+    unless dictionary? data -> panic "learn: graph data must be a dictionary"
+    unless and? [key? data 'format][data\format = "learn.graph"] -> panic "learn: unsupported graph data format"
+    loop ['order 'nodes 'inputs 'parameters] 'required [
+        unless key? data required -> panic ~"learn: graph data is missing |required|"
+    ]
+
+    seen: lrFreshBlock
+    loop data\order 'name [
+        unless key? data\nodes name -> panic ~"learn: graph order references missing node |name|"
+        node: data\nodes\[name]
+        unless dictionary? node -> panic ~"learn: graph node |name| must be a dictionary"
+        if key? node 'parents [
+            loop node\parents 'parent [
+                if literal? parent [
+                    unless contains? seen parent -> panic ~"learn: node |name| references unavailable parent |parent|"
+                ]
+            ]
+        ]
+        'seen ++ name
+    ]
+    return true
+]
+
+deadCodeEliminate: function [data outputName][
+    validateGraphData data
+    output: to :literal outputName
+    unless key? data\nodes output -> panic ~"learn: graph has no output named |output|"
+
+    reachable: lrFreshBlock
+    pending: @[output]
+    while [not? empty? pending][
+        name: pop 'pending
+        unless contains? reachable name [
+            'reachable ++ name
+            node: data\nodes\[name]
+            if key? node 'parents [
+                loop node\parents 'parent [if literal? parent -> 'pending ++ parent]
+            ]
+        ]
+    ]
+
+    nextOrder: select data\order 'name -> contains? reachable name
+    nextNodes: lrFreshDictionary
+    loop nextOrder 'name -> set nextNodes name data\nodes\[name]
+    nextInputs: select data\inputs 'name -> contains? reachable name
+    nextParameters: select data\parameters 'name -> contains? reachable name
+    return #[
+        format: data\format
+        version: data\version
+        inputs: nextInputs
+        parameters: nextParameters
+        order: nextOrder
+        nodes: nextNodes
+    ]
+]
+
+commonSubexpressions: function [data][
+    validateGraphData data
+    buckets: lrFreshDictionary
+    loop data\order 'name [
+        node: data\nodes\[name]
+        if node\role = 'operation [
+            signature: to :string @[node\operation node\shape node\parents]
+            names: lrFreshBlock
+            if key? buckets signature -> names: new buckets\[signature]
+            'names ++ name
+            set buckets signature names
+        ]
+    ]
+    groups: lrFreshBlock
+    loop values buckets 'names [if (size names) > 1 -> 'groups ++ @[names]]
+    return groups
+]
+
+optimizeGraph: function [data outputName][
+    ; v0.5's executable-safe pass is reachability pruning. CSEs are reported
+    ; separately because merging named nodes would change dynamic graph access.
+    return deadCodeEliminate data outputName
+]
+
+graphDot: function [source][
+    data: (is? :learnGraph source)? -> graphData source -> source
+    validateGraphData data
+    lines: @["digraph learn {"]
+    loop data\order 'name [
+        node: data\nodes\[name]
+        label: ~"|name|\\n|node\role|: |node\operation|"
+        'lines ++ ~"  \"|name|\" [label=\"|label|\"] ;"
+        if key? node 'parents [
+            loop node\parents 'parent [
+                if literal? parent -> 'lines ++ ~"  \"|parent|\" -> \"|name|\" ;"
+            ]
+        ]
+    ]
+    'lines ++ "}"
+    return join.with: "\n" lines
+]

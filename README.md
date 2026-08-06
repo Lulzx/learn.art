@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.4 combines a small tensor/autograd runtime with inspectable graphs, graph-built estimators, and dense neural composition.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.5 combines a small tensor/autograd runtime with inspectable models, neural composition, and graph-data transformations.
 
 ## Example
 
@@ -60,6 +60,10 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 `fit.linear features targets` and `fit.logistic features targets` build and train ordinary learn graphs. Use `predict`, `predict.probability`, `score`, `mse`, and `accuracy` to evaluate them. `split.ratio:` performs a deterministic paired row split. The first estimator layer accepts vectors or one-column matrices.
 
 `fit.mlp.hidden: 4 features targets` builds a dense one-hidden-layer regression graph. `relu`, `tensorTanh`, `dense`, `momentum`, and `adam` are also public building blocks.
+
+## Graph transformations
+
+`validateGraphData`, `deadCodeEliminate`, `commonSubexpressions`, and `optimizeGraph` analyze or rewrite the plain dictionary returned by `graphData`. `graphDot` exports the same representation for Graphviz visualization. These passes preserve the live eager graph and make lazy execution work explicit at the data boundary.
 
 ## Development
 

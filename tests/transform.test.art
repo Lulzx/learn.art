@@ -1,0 +1,44 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "graph transformations" [
+    test "validates, prunes, and finds repeated expressions" [
+        model: graph [
+            x: input
+            w: parameter 2.0
+            firstProduct: x * w
+            repeatedProduct: x * w
+            unused: square repeatedProduct
+            loss: mean firstProduct
+        ]
+        data: graphData model
+        valid?: validateGraphData data
+        duplicates: commonSubexpressions data
+        optimized: optimizeGraph data 'loss
+        optimizedOrder: optimized\order
+        assert -> valid?
+        assert -> 1 = size duplicates
+        assert -> contains? optimizedOrder 'firstProduct
+        assert -> not? contains? optimizedOrder 'unused
+        assert -> not? contains? optimizedOrder 'repeatedProduct
+    ]
+
+    test "exports graph data as DOT" [
+        model: graph [
+            x: input
+            result: square x
+        ]
+        dot: graphDot model
+        hasHeader?: contains? dot "digraph learn"
+        hasEdge?: contains? dot "x\" -> \"result"
+        assert -> hasHeader?
+        assert -> hasEdge?
+    ]
+
+    test "rejects missing outputs" [
+        model: graph [x: input result: square x]
+        data: graphData model
+        rejected?: throws? [deadCodeEliminate data 'missing]
+        assert -> rejected?
+    ]
+]

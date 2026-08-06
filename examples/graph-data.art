@@ -1,0 +1,13 @@
+import relative {../src/learn}!
+
+model: graph [
+    x: input
+    w: parameter 2.0
+    prediction: x * w
+    unused: square prediction
+    loss: mean prediction
+]
+
+data: graphData model
+print optimizeGraph data 'loss
+print graphDot model

@@ -167,4 +167,22 @@ suite "graph transformations" [
         assert -> 'operation = deduplicated\nodes\columns\role
         assert -> 'operation = deduplicated\nodes\rows\role
     ]
+
+    test "executes broadcasted batched matmul on the CPU schedule" [
+        xNode: lrInputFrom tensor.zeros [2 1 2]
+        model: graph [
+            x: xNode
+            weight: parameter tensor [[[1 2] [3 4]]]
+            result: matmul x weight
+        ]
+        feed: #[x: tensor [[[1 2]] [[3 4]]]]
+        forward.with: feed model
+        eager: model\result\value
+        data: graphData model
+        schedule: scheduleGraph data 'result
+        cpu: executeCpu.with: feed schedule
+        assert -> [2 1 2] = shape cpu
+        assert -> eager\data = cpu\data
+        assert -> [7.0 10.0 15.0 22.0] = cpu\data
+    ]
 ]

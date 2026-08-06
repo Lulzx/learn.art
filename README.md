@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.10 combines arbitrary-rank, device-aware tensors and autograd with inspectable models, portable checkpoints, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.11 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, portable checkpoints, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -46,7 +46,9 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 - `shape`, `reshape`, `transpose`, `tensorAt`, `square`, `tensorSum`, `mean`, and `matmul`
 - `availableDevices`, `deviceOf`, `toDevice`, `tensorBuffer`, and `tensorFromBuffer`
 
-Tensors contain owned floating-point `data`, inferred `shape`, and row-major `strides`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices. `matmul` remains deliberately rank-2.
+Tensors contain owned floating-point `data`, inferred `shape`, and row-major `strides`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices.
+
+`matmul` follows the usual generalized rules: two vectors produce a scalar dot product, matrix–vector and vector–matrix products remove the promoted unit dimension, and rank-2-or-higher operands broadcast their leading batch dimensions. The same shapes and batch accumulation rules apply to reverse-mode gradients and scheduled CPU execution.
 
 Every tensor carries an explicit device. v0.9 provides the CPU device, `tensor.device: 'cpu`, differentiable `toDevice`, and an owned `learn.buffer`/`float64` interchange contract. Device metadata survives graph export, optimization, and scheduled execution; unsupported devices fail at the placement boundary.
 
@@ -86,4 +88,4 @@ arturo examples/regression.art
 arturo examples/native-cpu.art
 ```
 
-GPU execution, mixed dtypes, slice views, mutation APIs, batched matrix multiplication, and additional native backends remain outside the current milestone.
+GPU execution, mixed dtypes, slice views, mutation APIs, and additional native backends remain outside the current milestone.

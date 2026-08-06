@@ -85,7 +85,9 @@ suite "dense tensors" [
     test "rejects malformed and incompatible tensors" [
         malformed?: throws? [tensor [[1] [2 3]]]
         broadcastMismatch?: throws? [(tensor [1 2]) + (tensor [1 2 3])]
-        matmulRanks?: throws? [matmul (tensor [1 2]) (tensor [1 2])]
+        scalar: tensor 1.0
+        vector: tensor [1 2]
+        matmulRanks?: throws? [matmul scalar vector]
         assert -> malformed?
         assert -> broadcastMismatch?
         assert -> matmulRanks?
@@ -152,5 +154,38 @@ suite "dense tensors" [
         assert -> axis?
         assert -> index?
         assert -> permutation?
+    ]
+
+    test "supports vector and batched matrix multiplication" [
+        leftVector: tensor [1 2]
+        rightVector: tensor [3 4]
+        matrix: tensor [[1 2] [3 4]]
+        rightMatrix: tensor [[3 4] [5 6]]
+        dot: matmul leftVector rightVector
+        matrixVector: matmul matrix leftVector
+        vectorMatrix: matmul leftVector rightMatrix
+
+        leftBatch: tensor [[[1 2]] [[3 4]]]
+        rightBatch: tensor [[[1 2] [3 4]]]
+        batched: matmul leftBatch rightBatch
+
+        assert -> [] = shape dot
+        assert -> [11.0] = dot\data
+        assert -> [2] = shape matrixVector
+        assert -> [5.0 11.0] = matrixVector\data
+        assert -> [2] = shape vectorMatrix
+        assert -> [13.0 16.0] = vectorMatrix\data
+        assert -> [2 1 2] = shape batched
+        assert -> [7.0 10.0 15.0 22.0] = batched\data
+    ]
+
+    test "rejects incompatible generalized matmul shapes" [
+        left: tensor.zeros [2 3 4]
+        wrongInner: tensor.zeros [2 5 6]
+        wrongBatch: tensor.zeros [3 4 6]
+        innerRejected?: throws? [matmul left wrongInner]
+        batchRejected?: throws? [matmul left wrongBatch]
+        assert -> innerRejected?
+        assert -> batchRejected?
     ]
 ]

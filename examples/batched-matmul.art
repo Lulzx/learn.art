@@ -1,0 +1,15 @@
+import relative {../src/learn}!
+
+do [
+    batches: variable tensor [[[1 2]] [[3 4]]]
+    weight: variable tensor [[[1 2] [3 4]]]
+    result: matmul batches weight
+    loss: tensorSum result
+
+    backward loss
+
+    print shape result
+    print result
+    print gradient batches
+    print gradient weight
+]

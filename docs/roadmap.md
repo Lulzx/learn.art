@@ -10,7 +10,8 @@
 - v0.8: arbitrary-rank tensors, axis reductions, axis permutations, and safe scalar indexing.
 - v0.9: explicit CPU placement, differentiable transfers, and a versioned tensor-buffer contract.
 - v0.10: named model state, atomic strict restoration, and portable checkpoints.
+- v0.11: vector products and broadcasted batched matrix multiplication with gradients.
 
 ## Next
 
-The next coherent milestone is generalized linear algebra: vector products and batched matrix multiplication with broadcasted batch dimensions and complete reverse-mode rules.
+The next coherent milestone is resumable training state: optimizer hyperparameters, momentum and Adam moments, timestep restoration, and combined model-plus-optimizer checkpoints.

@@ -516,6 +516,62 @@ binaryCrossEntropy: function [prediction target][
     return mean negativeCombined
 ]
 
+lrLeadingShape: function [dims trailingCount][
+    result: lrFreshBlock
+    leadingCount: (size dims) - trailingCount
+    if leadingCount > 0 [loop 0..(leadingCount - 1) 'axis -> 'result ++ dims\[axis]]
+    return result
+]
+
+lrMatmulSpec: function [leftShape rightShape][
+    leftRank: size leftShape
+    rightRank: size rightShape
+    if leftRank < 1 -> panic "learn: matmul left operand must have rank at least 1"
+    if rightRank < 1 -> panic "learn: matmul right operand must have rank at least 1"
+
+    leftVector: leftRank = 1
+    rightVector: rightRank = 1
+    rows: 1
+    unless leftVector -> rows: leftShape\[leftRank - 2]
+    inner: leftShape\[leftRank - 1]
+    rightInner: rightShape\0
+    unless rightVector -> rightInner: rightShape\[rightRank - 2]
+    cols: 1
+    unless rightVector -> cols: rightShape\[rightRank - 1]
+    unless inner = rightInner -> panic ~"learn: matmul shapes |leftShape| and |rightShape| are incompatible"
+
+    leftBatch: lrFreshBlock
+    unless leftVector -> leftBatch: lrLeadingShape leftShape 2
+    rightBatch: lrFreshBlock
+    unless rightVector -> rightBatch: lrLeadingShape rightShape 2
+    batchShape: lrBroadcastShape leftBatch rightBatch
+    outputShape: new batchShape
+    unless leftVector -> 'outputShape ++ rows
+    unless rightVector -> 'outputShape ++ cols
+    return #[
+        leftVector: leftVector
+        rightVector: rightVector
+        rows: rows
+        inner: inner
+        cols: cols
+        leftBatch: leftBatch
+        rightBatch: rightBatch
+        batchShape: batchShape
+        outputShape: outputShape
+    ]
+]
+
+lrMatmulIndices: function [spec batchIndex row col k][
+    leftBatchIndex: lrBroadcastIndex spec\leftBatch spec\batchShape batchIndex
+    rightBatchIndex: lrBroadcastIndex spec\rightBatch spec\batchShape batchIndex
+    leftMatrixSize: spec\rows * spec\inner
+    rightMatrixSize: spec\inner * spec\cols
+    leftIndex: (leftBatchIndex * leftMatrixSize) + (row * spec\inner) + k
+    rightIndex: (rightBatchIndex * rightMatrixSize) + (k * spec\cols) + col
+    outputIndex: (batchIndex * spec\rows * spec\cols) + (row * spec\cols) + col
+    return @[leftIndex rightIndex outputIndex]
+]
+
 matmul: function [left right][
     if or? [is? :learnValue left][is? :learnValue right] ->
         return lrValueMatmul left right
@@ -523,28 +579,24 @@ matmul: function [left right][
     a: lrAsTensor left
     b: lrAsTensor right
     unless a\device = b\device -> panic ~"learn: tensor devices |a\device| and |b\device| do not match"
-    unless and? [(size a\shape) = 2][(size b\shape) = 2] ->
-        panic "learn: matmul requires two rank-2 tensors"
-    unless a\shape\1 = b\shape\0 ->
-        panic ~"learn: matmul shapes |a\shape| and |b\shape| are incompatible"
-
-    rows: a\shape\0
-    inner: a\shape\1
-    cols: b\shape\1
+    spec: lrMatmulSpec a\shape b\shape
     data: lrFreshBlock
-    if (rows * cols) > 0 [
-        loop 0..(rows - 1) 'row [
-            loop 0..(cols - 1) 'col [
-                total: 0.0
-                if inner > 0 [
-                    loop 0..(inner - 1) 'k ->
-                        total: total + (a\data\[(row * inner) + k] * b\data\[(k * cols) + col])
+    batchCount: lrCount spec\batchShape
+    if and? [batchCount > 0][and? [spec\rows > 0][spec\cols > 0]] [
+        loop 0..(batchCount - 1) 'batchIndex [
+            loop 0..(spec\rows - 1) 'row [
+                loop 0..(spec\cols - 1) 'col [
+                    total: 0.0
+                    if spec\inner > 0 [loop 0..(spec\inner - 1) 'k [
+                        indices: lrMatmulIndices spec batchIndex row col k
+                        total: total + (a\data\[indices\0] * b\data\[indices\1])
+                    ]]
+                    'data ++ total
                 ]
-                'data ++ total
             ]
         ]
     ]
-    return lrMakeTensorOn @[rows cols] data a\device
+    return lrMakeTensorOn spec\outputShape data a\device
 ]
 
 lrTensorString: function [value][

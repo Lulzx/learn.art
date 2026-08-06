@@ -161,4 +161,27 @@ suite "reverse-mode autodiff" [
         secondGradient: gradient x
         assert -> [0.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0] = secondGradient\data
     ]
+
+    test "differentiates vector dot products" [
+        left: variable tensor [1 2]
+        right: variable tensor [3 4]
+        result: matmul left right
+        backward result
+        leftGradient: gradient left
+        rightGradient: gradient right
+        assert -> [3.0 4.0] = leftGradient\data
+        assert -> [1.0 2.0] = rightGradient\data
+    ]
+
+    test "differentiates broadcasted batched matmul" [
+        left: variable tensor [[[1 2]] [[3 4]]]
+        right: variable tensor [[[5] [6]]]
+        product: matmul left right
+        loss: tensorSum product
+        backward loss
+        leftGradient: gradient left
+        rightGradient: gradient right
+        assert -> [5.0 6.0 5.0 6.0] = leftGradient\data
+        assert -> [4.0 6.0] = rightGradient\data
+    ]
 ]

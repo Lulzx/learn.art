@@ -181,6 +181,36 @@ lrExpandReductionGradient: function [up sourceShape axis scale][
     return lrMakeTensorOn sourceShape data up\device
 ]
 
+lrMatmulGradients: function [left right up][
+    spec: lrMatmulSpec left\shape right\shape
+    leftData: lrFreshBlock
+    rightData: lrFreshBlock
+    if not? empty? left\data [loop 1..(size left\data) 'unused -> 'leftData ++ 0.0]
+    if not? empty? right\data [loop 1..(size right\data) 'unused -> 'rightData ++ 0.0]
+
+    batchCount: lrCount spec\batchShape
+    if and? [batchCount > 0][and? [spec\rows > 0][spec\cols > 0]] [
+        loop 0..(batchCount - 1) 'batchIndex [
+            loop 0..(spec\rows - 1) 'row [
+                loop 0..(spec\cols - 1) 'col [
+                    outputIndex: (batchIndex * spec\rows * spec\cols) + (row * spec\cols) + col
+                    upstream: up\data\[outputIndex]
+                    if spec\inner > 0 [loop 0..(spec\inner - 1) 'k [
+                        indices: lrMatmulIndices spec batchIndex row col k
+                        leftContribution: upstream * right\data\[indices\1]
+                        rightContribution: upstream * left\data\[indices\0]
+                        set leftData indices\0 (leftData\[indices\0] + leftContribution)
+                        set rightData indices\1 (rightData\[indices\1] + rightContribution)
+                    ]]
+                ]
+            ]
+        ]
+    ]
+    leftGradient: lrMakeTensorOn left\shape leftData left\device
+    rightGradient: lrMakeTensorOn right\shape rightData right\device
+    return @[leftGradient rightGradient]
+]
+
 lrAccumulate: function [node contribution][
     unless node\requiresGradient -> return null
     reduced: lrUnbroadcast contribution node\value\shape
@@ -396,12 +426,9 @@ backward: function [output][
             lrAccumulate node\parents\0 contribution
         ]
         if op = 'matmul [
-            rightT: transpose node\parents\1\value
-            leftT: transpose node\parents\0\value
-            leftGrad: matmul up rightT
-            rightGrad: matmul leftT up
-            lrAccumulate node\parents\0 leftGrad
-            lrAccumulate node\parents\1 rightGrad
+            gradients: lrMatmulGradients node\parents\0\value node\parents\1\value up
+            lrAccumulate node\parents\0 gradients\0
+            lrAccumulate node\parents\1 gradients\1
         ]
     ]
     return output

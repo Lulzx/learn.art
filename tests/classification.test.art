@@ -1,0 +1,104 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "multiclass learning" [
+    test "computes stable row-wise softmax probabilities" [
+        logits: tensor [[1000.0 1001.0 999.0] [1.0 1.0 1.0]]
+        probabilities: softmax logits
+        firstTotal: probabilities\data\0 + probabilities\data\1 + probabilities\data\2
+        secondTotal: probabilities\data\3 + probabilities\data\4 + probabilities\data\5
+        assert -> logits\shape = probabilities\shape
+        assert -> (abs firstTotal - 1.0) < 0.000000001
+        assert -> (abs secondTotal - 1.0) < 0.000000001
+        assert -> probabilities\data\1 > probabilities\data\0
+        assert -> probabilities\data\0 > probabilities\data\2
+    ]
+
+    test "differentiates stable cross entropy with respect to logits" [
+        raw: tensor [[1.0 2.0 3.0] [2.0 1.0 0.0]]
+        logits: variable raw
+        labels: tensor [2.0 0.0]
+        loss: crossEntropy logits labels
+        backward loss
+        grad: gradient logits
+        assert -> (abs loss\value\data\0 - 0.4076059644443806) < 0.000000001
+        assert -> (abs grad\data\0 - 0.04501528658519023) < 0.000000001
+        assert -> (abs grad\data\2 + 0.16737952211258905) < 0.000000001
+        assert -> (abs grad\data\3 + 0.16737952211258905) < 0.000000001
+    ]
+
+    test "backpropagates the softmax Jacobian-vector product" [
+        raw: tensor [1.0 2.0 3.0]
+        logits: variable raw
+        probabilities: softmax logits
+        weights: tensor [1.0 2.0 4.0]
+        weighted: probabilities * weights
+        loss: tensorSum weighted
+        backward loss
+        grad: gradient logits
+        total: grad\data\0 + grad\data\1 + grad\data\2
+        assert -> (abs total) < 0.000000001
+        assert -> grad\data\2 > 0.0
+        assert -> grad\data\0 < 0.0
+    ]
+
+    test "predicts classes and measures multiclass accuracy" [
+        logits: tensor [[0.0 3.0 1.0] [4.0 2.0 0.0] [0.0 1.0 5.0]]
+        predicted: classPrediction logits
+        labels: tensor [1.0 0.0 1.0]
+        assert -> [1.0 0.0 2.0] = predicted\data
+        assert -> (2.0 / 3.0) = multiclassAccuracy labels predicted
+    ]
+
+    test "recomputes multiclass graph operations and scheduled CPU execution" [
+        model: graph [
+            logits: input
+            labels: input
+            probabilities: softmax logits
+            loss: crossEntropy logits labels
+        ]
+        scores: tensor [[2.0 1.0 0.0] [0.0 1.0 2.0]]
+        labels: tensor [0.0 2.0]
+        feed: #[logits: scores labels: labels]
+        forward.with: feed model
+        eagerLoss: model\loss\value\data\0
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        scheduledLoss: executeCpu.with: feed schedule
+        assert -> (abs eagerLoss - 0.4076059644443806) < 0.000000001
+        assert -> eagerLoss = scheduledLoss\data\0
+    ]
+
+    test "trains a multiclass bias model through the high-level loop" [
+        features: tensor [[0.0 0.0 0.0] [0.0 0.0 0.0] [0.0 0.0 0.0]]
+        labels: tensor [1.0 1.0 1.0]
+        model: graph [
+            x: input
+            y: input
+            bias: parameter.zeros [3]
+            logits: x + bias
+            loss: crossEntropy logits y
+        ]
+        optimizer: sgd.rate: 0.2 (parameters model)
+        iterator: batcher.size: 3.shuffle: false features labels
+        history: train.epochs: 30 model optimizer iterator
+        forward.with: #[x: features y: labels] model
+        predicted: classPrediction model\logits
+        assert -> history\epochs\0\trainLoss > history\epochs\29\trainLoss
+        assert -> [1.0 1.0 1.0] = predicted\data
+        assert -> 1.0 = multiclassAccuracy labels predicted
+    ]
+
+    test "validates class targets" [
+        logits: tensor [[1.0 2.0]]
+        fractionalTarget: tensor [0.5]
+        outOfRangeTarget: tensor [2.0]
+        extraTargets: tensor [0.0 1.0]
+        fractional?: throws? [crossEntropy logits fractionalTarget]
+        outOfRange?: throws? [crossEntropy logits outOfRangeTarget]
+        wrongCount?: throws? [crossEntropy logits extraTargets]
+        assert -> fractional?
+        assert -> outOfRange?
+        assert -> wrongCount?
+    ]
+]

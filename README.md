@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.16 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.17 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass learning, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -52,7 +52,7 @@ Every tensor carries an explicit device. v0.9 provides the CPU device, `tensor.d
 
 `variable`, `backward`, `gradient`, `detach`, and `zeroGrad` form the autograd vocabulary. Scalar values are promoted automatically, so the smallest proof starts with `x: variable 2.0`.
 
-A graph evaluates its labeled block once to establish the operation DAG. `input` declares a placeholder and `forward.with:` supplies its runtime value. Graph fields are available dynamically (`model\loss`, `model\w`). `inputs`, `parameters`, and `operations` inspect its roles, while `graphData` returns a plain dictionary containing the graph order, nodes, shapes, operations, and parent relationships. `explain` renders that data for people.
+A graph evaluates its labeled block once to establish the operation DAG. `input` declares a scalar placeholder, `inputShape [1 4]` bootstraps operations that require a matrix shape, and `forward.with:` supplies its runtime value. Graph fields are available dynamically (`model\loss`, `model\w`). `inputs`, `parameters`, and `operations` inspect its roles, while `graphData` returns a plain dictionary containing the graph order, nodes, shapes, operations, and parent relationships. `explain` renders that data for people.
 
 `sgd.rate: 0.05 (parameters model)` creates a stateful optimizer. `step` updates parameter tensor data while preserving graph identity.
 
@@ -78,6 +78,12 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 
 `transformPipeline @[firstStep secondStep]` composes fitted preprocessors in order and reverses them in reverse order. `preprocessorState` and `preprocessorFromState` provide owned ordinary-data state, while `savePreprocessor` and `loadPreprocessor` use a portable, non-executable v0.16 checkpoint payload.
 
+## Multiclass learning
+
+`softmax logits` normalizes the final class axis with max-shifted exponentials. `crossEntropy logits classIndices` computes stable mean categorical cross entropy directly from a class vector or sample-by-class matrix and has the fused `(probability - target) / samples` gradient. Both operations participate in eager graphs and scheduled CPU execution.
+
+`classPrediction logits` returns argmax class indices with the class axis removed. `multiclassAccuracy targets predictions` compares integer-valued class tensors. `inputShape` makes matrix classifiers declarable before their runtime batch shape is known.
+
 ## Graph transformations
 
 `validateGraphData`, `deadCodeEliminate`, `commonSubexpressions`, and `optimizeGraph` analyze or rewrite the plain dictionary returned by `graphData`. `graphDot` exports the same representation for Graphviz visualization. These passes preserve the live eager graph and make lazy execution work explicit at the data boundary.
@@ -97,6 +103,7 @@ arturo examples/linear.art
 arturo examples/regression.art
 arturo examples/training-loop.art
 arturo examples/preprocessing.art
+arturo examples/multiclass.art
 arturo examples/native-cpu.art
 ```
 

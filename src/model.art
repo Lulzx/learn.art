@@ -40,6 +40,17 @@ input: function [][
     ]
 ]
 
+inputShape: function [dims][
+    placeholder: tensor.zeros dims
+    return lrMakeValue #[
+        value: placeholder
+        requiresGradient: false
+        operation: 'input
+        parents: lrFreshBlock
+        parameter: false
+    ]
+]
+
 parameter: function [dims][
     callAttrs: attrs
     makeZeros: key? callAttrs 'zeros

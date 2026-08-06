@@ -2,6 +2,20 @@ import'unitt!
 import relative {../src/learn}!
 
 suite "graphs and optimization" [
+    test "declares shaped input placeholders for matrix graphs" [
+        model: graph [
+            x: inputShape [1 2]
+            weight: parameter.zeros [2 3]
+            logits: matmul x weight
+            loss: mean logits
+        ]
+        assert -> [1 2] = model\x\value\shape
+        assert -> [1 3] = model\logits\value\shape
+        runtimeInput: tensor [[1.0 2.0] [3.0 4.0]]
+        forward.with: #[x: runtimeInput] model
+        assert -> [2 3] = model\logits\value\shape
+    ]
+
     test "feeds declared inputs and exposes ordinary graph data" [
         model: graph [
             x: input

@@ -79,8 +79,16 @@ lrValueBinary: function [left right operation][
 
 lrValueUnary: function [value operation][
     source: lrAsValue value
-    result: lrTensorUnary source\value operation
+    result: (operation = 'softmax)? -> lrTensorSoftmax source\value -> lrTensorUnary source\value operation
     return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: operation parents: @[source] parameter: false]
+]
+
+lrValueCrossEntropy: function [logits targets][
+    scores: lrAsValue logits
+    labels: lrAsValue targets
+    if labels\requiresGradient -> panic "learn: crossEntropy targets cannot require gradients"
+    result: lrTensorCrossEntropy scores\value labels\value
+    return lrMakeValue #[value: result requiresGradient: scores\requiresGradient operation: 'crossEntropy parents: @[scores labels] parameter: false]
 ]
 
 lrValueReduce: function [value operation requestedAxis][
@@ -262,6 +270,8 @@ lrForwardNode: function [node][
     if op = 'sigmoid -> node\value: lrTensorUnary node\parents\0\value 'sigmoid
     if op = 'relu -> node\value: lrTensorUnary node\parents\0\value 'relu
     if op = 'tanh -> node\value: lrTensorUnary node\parents\0\value 'tanh
+    if op = 'softmax -> node\value: lrTensorSoftmax node\parents\0\value
+    if op = 'crossEntropy -> node\value: lrTensorCrossEntropy node\parents\0\value node\parents\1\value
     if op = 'add -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'add
     if op = 'sub -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'sub
     if op = 'mul -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'mul
@@ -371,6 +381,42 @@ backward: function [output][
             one: lrOnesLike localValue
             local: lrTensorBinary one localSquare 'sub
             contribution: lrTensorBinary up local 'mul
+            lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'softmax [
+            probabilities: node\value
+            spec: lrSoftmaxSpec probabilities
+            groups: spec\0
+            classes: spec\1
+            data: lrFreshBlock
+            if groups > 0 [loop 0..(groups - 1) 'groupIndex [
+                offset: groupIndex * classes
+                dot: 0.0
+                loop 0..(classes - 1) 'classIndex -> dot: dot + (up\data\[offset + classIndex] * probabilities\data\[offset + classIndex])
+                loop 0..(classes - 1) 'classIndex [
+                    probability: probabilities\data\[offset + classIndex]
+                    'data ++ probability * (up\data\[offset + classIndex] - dot)
+                ]
+            ]]
+            contribution: lrMakeTensorOn probabilities\shape data probabilities\device
+            lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'crossEntropy [
+            scores: node\parents\0\value
+            labels: node\parents\1\value
+            spec: lrCrossEntropySpec scores labels
+            samples: spec\0
+            classes: spec\1
+            probabilities: lrTensorSoftmax scores
+            data: new probabilities\data
+            loop 0..(samples - 1) 'sampleIndex [
+                targetIndex: lrClassIndex labels\data\[sampleIndex] classes
+                flatIndex: (sampleIndex * classes) + targetIndex
+                set data flatIndex (data\[flatIndex] - 1.0)
+            ]
+            scale: up\data\0 / samples
+            rawContribution: lrMakeTensorOn scores\shape data scores\device
+            contribution: lrTensorBinary rawContribution scale 'mul
             lrAccumulate node\parents\0 contribution
         ]
         if op = 'pow [

@@ -1,0 +1,24 @@
+import relative {../src/learn}!
+
+features: tensor [[0.0 0.0] [0.2 0.0] [3.0 0.0] [4.0 0.0] [0.0 3.0] [0.0 4.0]]
+labels: tensor [0.0 0.0 1.0 1.0 2.0 2.0]
+
+model: graph [
+    x: inputShape [1 2]
+    y: input
+    weight: parameter.zeros [2 3]
+    bias: parameter.zeros [3]
+    linear: matmul x weight
+    logits: linear + bias
+    loss: crossEntropy logits y
+]
+
+optimizer: adam.rate: 0.1 (parameters model)
+iterator: batcher.size: 3.seed: 4 features labels
+history: train.epochs: 80 model optimizer iterator
+
+forward.with: #[x: features y: labels] model
+predicted: classPrediction model\logits
+print ~"classes: |predicted|"
+print ~"accuracy: |multiclassAccuracy labels predicted|"
+print ~"final loss: |last history\epochs|"

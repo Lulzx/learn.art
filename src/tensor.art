@@ -357,6 +357,78 @@ lrTensorUnary: function [value operation][
     return lrMakeTensorOn source\shape data source\device
 ]
 
+lrSoftmaxSpec: function [source][
+    rank: size source\shape
+    classes: (rank = 0)? -> 1 -> last source\shape
+    unless classes > 0 -> panic "learn: softmax requires a non-empty class axis"
+    groups: (size source\data) / classes
+    return @[to :integer groups classes]
+]
+
+lrTensorSoftmax: function [value][
+    source: lrAsTensor value
+    spec: lrSoftmaxSpec source
+    groups: spec\0
+    classes: spec\1
+    output: lrFreshBlock
+    if groups > 0 [loop 0..(groups - 1) 'groupIndex [
+        offset: groupIndex * classes
+        maximum: source\data\[offset]
+        if classes > 1 [loop 1..(classes - 1) 'classIndex -> maximum: max @[maximum source\data\[offset + classIndex]]]
+        denominator: 0.0
+        exponentials: lrFreshBlock
+        loop 0..(classes - 1) 'classIndex [
+            shifted: source\data\[offset + classIndex] - maximum
+            item: exp shifted
+            'exponentials ++ item
+            denominator: denominator + item
+        ]
+        loop exponentials 'item -> 'output ++ item / denominator
+    ]]
+    return lrMakeTensorOn source\shape output source\device
+]
+
+lrClassIndex: function [value classes][
+    unless lrNumeric? value -> panic "learn: class targets must be numeric indices"
+    classIndex: to :integer value
+    unless (to :floating classIndex) = (to :floating value) -> panic "learn: class targets must be integer indices"
+    unless and? [classIndex >= 0][classIndex < classes] -> panic ~"learn: class target |classIndex| is out of bounds"
+    return classIndex
+]
+
+lrCrossEntropySpec: function [logits targets][
+    rank: size logits\shape
+    unless rank =< 2 -> panic "learn: crossEntropy supports a class vector or sample-by-class matrix"
+    unless (size targets\shape) =< 1 -> panic "learn: crossEntropy targets must be a scalar or vector"
+    softmaxSpec: lrSoftmaxSpec logits
+    samples: softmaxSpec\0
+    classes: softmaxSpec\1
+    unless (size targets\data) = samples -> panic "learn: crossEntropy requires one class target per sample"
+    return @[samples classes]
+]
+
+lrTensorCrossEntropy: function [logitsValue targetsValue][
+    logits: lrAsTensor logitsValue
+    targets: lrAsTensor targetsValue
+    unless logits\device = targets\device -> panic "learn: crossEntropy operands must be on the same device"
+    spec: lrCrossEntropySpec logits targets
+    samples: spec\0
+    classes: spec\1
+    unless samples > 0 -> panic "learn: crossEntropy is undefined for an empty batch"
+    total: 0.0
+    loop 0..(samples - 1) 'sampleIndex [
+        offset: sampleIndex * classes
+        maximum: logits\data\[offset]
+        if classes > 1 [loop 1..(classes - 1) 'classIndex -> maximum: max @[maximum logits\data\[offset + classIndex]]]
+        exponentialSum: 0.0
+        loop 0..(classes - 1) 'classIndex -> exponentialSum: exponentialSum + exp (logits\data\[offset + classIndex] - maximum)
+        targetIndex: lrClassIndex targets\data\[sampleIndex] classes
+        logNormalizer: maximum + ln exponentialSum
+        total: total + logNormalizer - logits\data\[offset + targetIndex]
+    ]
+    return lrMakeTensorOn [] @[total / samples] logits\device
+]
+
 reshape: function [value dims][
     if is? :learnValue value -> return lrValueReshape value dims
     source: lrAsTensor value
@@ -496,6 +568,50 @@ tensorExp: function [value][
 tensorLog: function [value][
     if is? :learnValue value -> return lrValueUnary value 'log
     return lrTensorUnary value 'log
+]
+
+softmax: function [value][
+    if is? :learnValue value -> return lrValueUnary value 'softmax
+    return lrTensorSoftmax value
+]
+
+crossEntropy: function [logits targets][
+    if or? [is? :learnValue logits][is? :learnValue targets] -> return lrValueCrossEntropy logits targets
+    return lrTensorCrossEntropy logits targets
+]
+
+classPrediction: function [logitsValue][
+    logits: (is? :learnValue logitsValue)? -> logitsValue\value -> lrAsTensor logitsValue
+    spec: lrSoftmaxSpec logits
+    groups: spec\0
+    classes: spec\1
+    predictions: lrFreshBlock
+    if groups > 0 [loop 0..(groups - 1) 'groupIndex [
+        offset: groupIndex * classes
+        bestIndex: 0
+        bestValue: logits\data\[offset]
+        if classes > 1 [loop 1..(classes - 1) 'classIndex [
+            candidate: logits\data\[offset + classIndex]
+            if candidate > bestValue [bestValue: candidate bestIndex: classIndex]
+        ]]
+        'predictions ++ to :floating bestIndex
+    ]]
+    outputShape: lrLeadingShape logits\shape 1
+    return lrMakeTensorOn outputShape predictions logits\device
+]
+
+multiclassAccuracy: function [actual predicted][
+    targets: lrAsTensor actual
+    classes: lrAsTensor predicted
+    unless targets\shape = classes\shape -> panic "learn: multiclass accuracy values must have equal shape"
+    if empty? targets\data -> panic "learn: multiclass accuracy is undefined for empty values"
+    correct: 0
+    loop 0..((size targets\data) - 1) 'itemIndex [
+        expected: lrClassIndex targets\data\[itemIndex] 2147483647
+        actualClass: lrClassIndex classes\data\[itemIndex] 2147483647
+        if expected = actualClass -> correct: correct + 1
+    ]
+    return (to :floating correct) / size targets\data
 ]
 
 binaryCrossEntropy: function [prediction target][

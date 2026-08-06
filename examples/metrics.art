@@ -1,0 +1,18 @@
+import relative {../src/learn}!
+
+firstTargets: tensor [0.0 0.0 1.0]
+firstPredictions: tensor [0.0 1.0 1.0]
+secondTargets: tensor [1.0 2.0 2.0]
+secondPredictions: tensor [1.0 0.0 2.0]
+
+firstShard: confusionMeter 3
+secondShard: confusionMeter 3
+updateConfusion firstShard firstTargets firstPredictions
+updateConfusion secondShard secondTargets secondPredictions
+mergeConfusion firstShard secondShard
+
+report: confusionReport firstShard
+print ~"matrix: |report\matrix|"
+print ~"accuracy: |report\accuracy|"
+print ~"macro F1: |report\macroF1|"
+print ~"per class: |report\perClass|"

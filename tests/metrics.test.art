@@ -1,0 +1,98 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "classification telemetry" [
+    test "builds an actual-by-predicted confusion matrix" [
+        actual: tensor [0.0 0.0 1.0 1.0 2.0 2.0]
+        predicted: tensor [0.0 1.0 1.0 1.0 0.0 2.0]
+        matrix: confusionMatrix actual predicted
+        assert -> [3 3] = matrix\shape
+        assert -> [1.0 1.0 0.0 0.0 2.0 0.0 1.0 0.0 1.0] = matrix\data
+    ]
+
+    test "reports per-class and macro classification metrics" [
+        actual: tensor [0.0 0.0 1.0 1.0 2.0 2.0]
+        predicted: tensor [0.0 1.0 1.0 1.0 0.0 2.0]
+        report: classificationReport actual predicted
+        classZero: report\perClass\0
+        classOne: report\perClass\1
+        classTwo: report\perClass\2
+        assert -> (2.0 / 3.0) = report\accuracy
+        assert -> 0.5 = classZero\precision
+        assert -> 0.5 = classZero\recall
+        assert -> (2.0 / 3.0) = classOne\precision
+        assert -> 1.0 = classOne\recall
+        assert -> 0.8 = classOne\f1
+        assert -> 1.0 = classTwo\precision
+        assert -> 0.5 = classTwo\recall
+        assert -> (abs report\macroF1 - 0.6555555555555556) < 0.000000001
+    ]
+
+    test "updates and merges validation shards" [
+        firstActual: tensor [0.0 0.0 1.0]
+        firstPredicted: tensor [0.0 1.0 1.0]
+        secondActual: tensor [1.0 2.0 2.0]
+        secondPredicted: tensor [1.0 0.0 2.0]
+        firstMeter: confusionMeter 3
+        secondMeter: confusionMeter 3
+        updateConfusion firstMeter firstActual firstPredicted
+        updateConfusion secondMeter secondActual secondPredicted
+        mergeConfusion firstMeter secondMeter
+        report: confusionReport firstMeter
+        assert -> 6 = firstMeter\samples
+        assert -> [1 1 0 0 2 0 1 0 1] = firstMeter\counts
+        assert -> (2.0 / 3.0) = report\accuracy
+    ]
+
+    test "uses explicit classes for absent report rows" [
+        actual: tensor [0.0 1.0]
+        predicted: tensor [0.0 1.0]
+        report: classificationReport.classes: 3 actual predicted
+        absent: report\perClass\2
+        assert -> 3 = report\classes
+        assert -> 0 = absent\support
+        assert -> 0.0 = absent\precision
+        assert -> 0.0 = absent\recall
+        assert -> 0.0 = absent\f1
+    ]
+
+    test "round-trips owned mergeable state" [
+        meter: confusionMeter 2
+        actual: tensor [0.0 1.0 1.0]
+        predicted: tensor [0.0 0.0 1.0]
+        updateConfusion meter actual predicted
+        state: confusionState meter
+        restored: confusionFromState state
+        set state\counts 0 99
+        assert -> [1 0 1 1] = meter\counts
+        assert -> meter\counts = restored\counts
+        assert -> meter\samples = restored\samples
+    ]
+
+    test "keeps meter storage independent" [
+        firstMeter: confusionMeter 2
+        secondMeter: confusionMeter 2
+        actual: tensor [0.0]
+        predicted: tensor [0.0]
+        updateConfusion firstMeter actual predicted
+        assert -> [1 0 0 0] = firstMeter\counts
+        assert -> [0 0 0 0] = secondMeter\counts
+    ]
+
+    test "validates metric inputs and state" [
+        actual: tensor [0.0 1.0]
+        shortPrediction: tensor [0.0]
+        shapeMismatch?: throws? [confusionMatrix actual shortPrediction]
+        invalidMeter?: throws? [confusionMeter 0]
+        firstMeter: confusionMeter 2
+        secondMeter: confusionMeter 3
+        mergeMismatch?: throws? [mergeConfusion firstMeter secondMeter]
+        state: confusionState firstMeter
+        state\samples: 1
+        invalidState?: throws? [confusionFromState state]
+        assert -> shapeMismatch?
+        assert -> invalidMeter?
+        assert -> mergeMismatch?
+        assert -> invalidState?
+    ]
+]

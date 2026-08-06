@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.20 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass learning, reusable layers, deterministic initialization, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.21 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass learning, mergeable evaluation telemetry, deterministic model composition, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -102,6 +102,12 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 
 Dense layers use Xavier initialization with seed `0` by default; pass `denseLayer.initializer:` with explicit, distinct seeds when same-shaped layers need independent streams. `resetParameter`, `resetLayer`, and `resetParameters` regenerate values from a strategy, clear stale gradients, and retain initializer metadata.
 
+## Evaluation telemetry
+
+`confusionMatrix actual predicted` returns an actual-row/predicted-column tensor. `classificationReport` adds accuracy, macro precision/recall/F1, and per-class support, true/false positives, false negatives, precision, recall, and F1. Use `.classes:` when validation data may omit a class; absent classes receive zero-valued ratios.
+
+`confusionMeter classes` accumulates batches with `updateConfusion`. `mergeConfusion` combines validation shards, `confusionReport` produces the same report, and `confusionState`/`confusionFromState` provide owned v0.21 state for distributed or interrupted evaluation.
+
 ## Graph transformations
 
 `validateGraphData`, `deadCodeEliminate`, `commonSubexpressions`, and `optimizeGraph` analyze or rewrite the plain dictionary returned by `graphData`. `graphDot` exports the same representation for Graphviz visualization. These passes preserve the live eager graph and make lazy execution work explicit at the data boundary.
@@ -125,6 +131,7 @@ arturo examples/multiclass.art
 arturo examples/regularization.art
 arturo examples/composition.art
 arturo examples/initialization.art
+arturo examples/metrics.art
 arturo examples/native-cpu.art
 ```
 

@@ -20,7 +20,8 @@
 - v0.18: seeded inverted dropout, explicit train/eval mode, resumable regularization state, and L1/L2 penalties.
 - v0.19: reusable dense layers, nested parameter discovery, named groups, and resumable selective freezing.
 - v0.20: local seeded Xavier/He/uniform initialization, reset APIs, and repeatable initializer metadata.
+- v0.21: confusion matrices, per-class and macro reports, and mergeable streaming classification meters.
 
 ## Next
 
-The next coherent milestone is evaluation telemetry: confusion matrices, per-class precision/recall/F1, and mergeable streaming metrics for validation loops.
+The next coherent milestone is portable inference artifacts: graph architecture plus parameter and preprocessing state in one validated, executable package.

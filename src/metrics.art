@@ -1,0 +1,165 @@
+; Batch and mergeable classification telemetry.
+
+import relative {./tensor}!
+
+define :learnConfusionMeter [
+    init: constructor [classes counts samples]
+]
+
+lrValidateClassificationPair: function [actual predicted][
+    targets: lrAsTensor actual
+    predictions: lrAsTensor predicted
+    unless targets\shape = predictions\shape -> panic "learn: classification metric values must have equal shape"
+    if empty? targets\data -> panic "learn: classification metrics are undefined for empty values"
+    return @[targets predictions]
+]
+
+lrInferredClasses: function [targets predictions][
+    largest: 0
+    loop targets\data 'item [
+        classIndex: lrClassIndex item 2147483647
+        if classIndex > largest -> largest: classIndex
+    ]
+    loop predictions\data 'item [
+        classIndex: lrClassIndex item 2147483647
+        if classIndex > largest -> largest: classIndex
+    ]
+    return largest + 1
+]
+
+lrConfusionCounts: function [targets predictions classes][
+    unless and? [integer? classes][classes > 0] -> panic "learn: confusion matrix class count must be positive"
+    counts: lrArgs (classes * classes)
+    if not? empty? counts [loop 0..((size counts) - 1) 'itemIndex -> set counts itemIndex 0]
+    loop 0..((size targets\data) - 1) 'itemIndex [
+        actualClass: lrClassIndex targets\data\[itemIndex] classes
+        predictedClass: lrClassIndex predictions\data\[itemIndex] classes
+        offset: (actualClass * classes) + predictedClass
+        set counts offset (counts\[offset] + 1)
+    ]
+    return counts
+]
+
+confusionMatrix: function [actual predicted][
+    requestedClasses: attr 'classes
+    pair: lrValidateClassificationPair actual predicted
+    classes: requestedClasses
+    if null? classes -> classes: lrInferredClasses pair\0 pair\1
+    counts: lrConfusionCounts pair\0 pair\1 classes
+    return lrMakeTensor @[classes classes] counts
+]
+
+confusionMeter: function [classes][
+    unless and? [integer? classes][classes > 0] -> panic "learn: confusionMeter expects a positive class count"
+    counts: lrArgs (classes * classes)
+    if not? empty? counts [loop 0..((size counts) - 1) 'itemIndex -> set counts itemIndex 0]
+    args: lrArgs 3
+    set args 0 classes
+    set args 1 counts
+    set args 2 0
+    result: to :learnConfusionMeter args
+    set result 'counts new counts
+    set result 'samples 0
+    return result
+]
+
+updateConfusion: function [meter actual predicted][
+    unless is? :learnConfusionMeter meter -> panic "learn: updateConfusion expects a confusion meter"
+    pair: lrValidateClassificationPair actual predicted
+    nextCounts: lrConfusionCounts pair\0 pair\1 meter\classes
+    loop 0..((size meter\counts) - 1) 'itemIndex -> set meter\counts itemIndex (meter\counts\[itemIndex] + nextCounts\[itemIndex])
+    meter\samples: meter\samples + size pair\0\data
+    return meter
+]
+
+mergeConfusion: function [target source][
+    unless and? [is? :learnConfusionMeter target][is? :learnConfusionMeter source] -> panic "learn: mergeConfusion expects confusion meters"
+    unless target\classes = source\classes -> panic "learn: confusion meters have different class counts"
+    loop 0..((size target\counts) - 1) 'itemIndex -> set target\counts itemIndex (target\counts\[itemIndex] + source\counts\[itemIndex])
+    target\samples: target\samples + source\samples
+    return target
+]
+
+confusionState: function [meter][
+    unless is? :learnConfusionMeter meter -> panic "learn: confusionState expects a confusion meter"
+    return #[format: "learn.confusion-state" version: "0.21" classes: meter\classes samples: meter\samples counts: new meter\counts]
+]
+
+confusionFromState: function [state][
+    unless and? [dictionary? state][and? [key? state 'format][state\format = "learn.confusion-state"]] -> panic "learn: unsupported confusion state format"
+    unless and? [key? state 'version][state\version = "0.21"] -> panic "learn: unsupported confusion state version"
+    loop ['classes 'samples 'counts] 'field [unless key? state field -> panic ~"learn: confusion state is missing |field|"]
+    unless and? [integer? state\classes][state\classes > 0] -> panic "learn: confusion state class count is invalid"
+    unless and? [integer? state\samples][state\samples >= 0] -> panic "learn: confusion state sample count is invalid"
+    expectedCount: state\classes * state\classes
+    unless and? [block? state\counts][(size state\counts) = expectedCount] -> panic "learn: confusion state counts are invalid"
+    total: 0
+    counts: lrFreshBlock
+    loop state\counts 'item [
+        unless and? [integer? item][item >= 0] -> panic "learn: confusion counts must be non-negative integers"
+        'counts ++ item
+        total: total + item
+    ]
+    unless total = state\samples -> panic "learn: confusion state sample count does not match counts"
+    args: lrArgs 3
+    set args 0 state\classes
+    set args 1 counts
+    set args 2 state\samples
+    result: to :learnConfusionMeter args
+    set result 'counts new counts
+    set result 'samples state\samples
+    return result
+]
+
+lrSafeMetricRatio: function [numerator denominator][
+    if denominator = 0 -> return 0.0
+    return (to :floating numerator) / denominator
+]
+
+confusionReport: function [meter][
+    unless is? :learnConfusionMeter meter -> panic "learn: confusionReport expects a confusion meter"
+    if meter\samples = 0 -> panic "learn: classification report is undefined without samples"
+    perClass: lrFreshBlock
+    correct: 0
+    precisionTotal: 0.0
+    recallTotal: 0.0
+    f1Total: 0.0
+    loop 0..(meter\classes - 1) 'classIndex [
+        truePositive: meter\counts\[(classIndex * meter\classes) + classIndex]
+        correct: correct + truePositive
+        support: 0
+        predicted: 0
+        loop 0..(meter\classes - 1) 'otherClass [
+            support: support + meter\counts\[(classIndex * meter\classes) + otherClass]
+            predicted: predicted + meter\counts\[(otherClass * meter\classes) + classIndex]
+        ]
+        precision: lrSafeMetricRatio truePositive predicted
+        recall: lrSafeMetricRatio truePositive support
+        f1: 0.0
+        if (precision + recall) > 0.0 -> f1: (2.0 * precision * recall) / (precision + recall)
+        precisionTotal: precisionTotal + precision
+        recallTotal: recallTotal + recall
+        f1Total: f1Total + f1
+        'perClass ++ @[#[class: classIndex support: support truePositive: truePositive falsePositive: predicted - truePositive falseNegative: support - truePositive precision: precision recall: recall f1: f1]]
+    ]
+    return #[
+        format: "learn.classification-report" version: "0.21"
+        classes: meter\classes samples: meter\samples
+        accuracy: (to :floating correct) / meter\samples
+        macroPrecision: precisionTotal / meter\classes
+        macroRecall: recallTotal / meter\classes
+        macroF1: f1Total / meter\classes
+        perClass: perClass
+        matrix: lrMakeTensor @[meter\classes meter\classes] meter\counts
+    ]
+]
+
+classificationReport: function [actual predicted][
+    requestedClasses: attr 'classes
+    pair: lrValidateClassificationPair actual predicted
+    classes: requestedClasses
+    if null? classes -> classes: lrInferredClasses pair\0 pair\1
+    meter: confusionMeter classes
+    updateConfusion meter pair\0 pair\1
+    return confusionReport meter
+]

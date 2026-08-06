@@ -3,12 +3,14 @@
 import relative {./autograd}!
 
 define :learnGraph [
-    init: constructor [values names parameterList]
+    init: constructor [values names parameterList inputList source feeds]
 
     get: method [what][
         if key? this\values what -> return this\values\[what]
         panic ~"learn: graph has no value named |what|"
     ]
+
+    dictionary: method [][graphData this]
 
     string: method [][~"learn graph |this\names|"]
 ]
@@ -18,12 +20,29 @@ define :learnSgd [
     string: method [][~"SGD(rate: |this\rate|, parameters: |size this\parameterList|)"]
 ]
 
+; `input` intentionally replaces Arturo's terminal-input word after import.
+; In a graph block it constructs a symbolic, initially scalar placeholder.
+input: function [][
+    return lrMakeValue #[
+        value: tensor 0.0
+        requiresGradient: false
+        operation: 'input
+        parents: []
+        parameter: false
+    ]
+]
+
 parameter: function [dims][
     callAttrs: attrs
     makeZeros: key? callAttrs 'zeros
     makeRandom: key? callAttrs 'random
-    unless or? [makeZeros][makeRandom] ->
-        panic "learn: parameter requires .zeros or .random"
+
+    unless or? [makeZeros][makeRandom] [
+        source: lrAsTensor dims
+        result: variable source
+        result\parameter: true
+        return result
+    ]
 
     lrValidateShape dims
     data: []
@@ -60,6 +79,7 @@ graph: function [body][
     scope: symbols
     graphValues: #[]
     parameterList: []
+    inputList: []
 
     loop names 'name [
         unless key? scope name -> panic ~"learn: graph could not evaluate |name|"
@@ -68,13 +88,22 @@ graph: function [body][
             panic ~"learn: graph value |name| is not a tensor expression"
         set graphValues name item
         if and? [is? :learnValue item][item\parameter] -> 'parameterList ++ @[item]
+        if and? [is? :learnValue item][item\operation = 'input] -> 'inputList ++ @[name]
     ]
 
-    args: [null null null]
+    args: [null null null null null null]
     set args 0 graphValues
     set args 1 names
     set args 2 parameterList
+    set args 3 inputList
+    set args 4 new body
+    set args 5 #[]
     return to :learnGraph args
+]
+
+inputs: function [model][
+    unless is? :learnGraph model -> panic "learn: inputs expects a graph"
+    return new model\inputList
 ]
 
 parameters: function [model][
@@ -83,12 +112,113 @@ parameters: function [model][
 ]
 
 forward: function [model][
+    callAttrs: attrs
     unless is? :learnGraph model -> panic "learn: forward expects a graph"
+
+    if key? callAttrs 'with [
+        feed: callAttrs\with
+        unless dictionary? feed -> panic "learn: forward.with expects a dictionary of input values"
+        loop keys feed 'name [
+            unless contains? model\inputList to :literal name ->
+                panic ~"learn: graph has no input named |name|"
+        ]
+        loop model\inputList 'name [
+            unless key? feed name -> panic ~"learn: missing graph input |name|"
+            node: model\values\[name]
+            node\value: lrAsTensor feed\[name]
+            set model\feeds name true
+        ]
+    ]
+
+    loop model\inputList 'name [
+        unless key? model\feeds name -> panic ~"learn: input |name| has not been provided"
+    ]
+
     loop model\names 'name [
         item: model\values\[name]
         if is? :learnValue item -> forwardValue item
     ]
     return model
+]
+
+operations: function [model][
+    unless is? :learnGraph model -> panic "learn: operations expects a graph"
+    result: []
+    loop model\names 'name [
+        item: model\values\[name]
+        if is? :learnValue item [
+            unless contains? ['leaf 'constant 'input] item\operation -> 'result ++ @[name]
+        ]
+    ]
+    return result
+]
+
+lrGraphNameOf: function [model sought][
+    loop model\names 'name [
+        candidate: model\values\[name]
+        if and? [is? :learnValue candidate][candidate\id = sought\id] -> return name
+    ]
+    return null
+]
+
+lrTensorData: function [value][
+    source: lrAsTensor value
+    return #[shape: new source\shape data: new source\data]
+]
+
+lrGraphNodeData: function [model name][
+    item: model\values\[name]
+    if is? :learnTensor item ->
+        return #[role: 'constant value: lrTensorData item]
+
+    role: 'operation
+    if contains? ['leaf 'constant] item\operation -> role: 'constant
+    if item\operation = 'input -> role: 'input
+    if item\parameter -> role: 'parameter
+
+    parentData: []
+    loop item\parents 'parent [
+        parentName: lrGraphNameOf model parent
+        if null? parentName -> 'parentData ++ @[#[role: 'constant value: lrTensorData parent\value]]
+        unless null? parentName -> 'parentData ++ @[parentName]
+    ]
+
+    return #[
+        role: role
+        operation: item\operation
+        shape: new item\value\shape
+        parents: parentData
+        value: (role = 'parameter)? -> lrTensorData item\value -> null
+    ]
+]
+
+graphData: function [model][
+    unless is? :learnGraph model -> panic "learn: graphData expects a graph"
+    nodes: #[]
+    parameterNames: []
+    loop model\names 'name [
+        nodeData: lrGraphNodeData model name
+        set nodes name nodeData
+        if nodeData\role = 'parameter -> 'parameterNames ++ @[name]
+    ]
+    return #[
+        format: "learn.graph"
+        version: "0.2"
+        inputs: new model\inputList
+        parameters: parameterNames
+        order: new model\names
+        nodes: nodes
+    ]
+]
+
+explain: function [model][
+    data: graphData model
+    lines: @[~"graph(inputs: |data\inputs|, parameters: |data\parameters|)"]
+    loop data\order 'name [
+        node: data\nodes\[name]
+        'lines ++ ~"|name|: |node\role| |node\operation| <- |node\parents|"
+    ]
+    return join.with: "\n" lines
 ]
 
 sgd: function [parameterList][

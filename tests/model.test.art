@@ -2,6 +2,42 @@ import'unitt!
 import relative {../src/learn}!
 
 suite "graphs and optimization" [
+    test "feeds declared inputs and exposes ordinary graph data" [
+        model: graph [
+            x: input
+            y: input
+            w: parameter 0.0
+            prediction: x * w
+            residual: prediction - y
+            loss: mean square residual
+        ]
+        feed: #[x: tensor [1.0 2.0] y: tensor [2.0 4.0]]
+        forward.with: feed model
+        declaredInputs: inputs model
+        namedOperations: operations model
+        data: graphData model
+        plainData?: dictionary? data
+        assert -> ['x 'y] = declaredInputs
+        assert -> contains? namedOperations 'loss
+        assert -> plainData?
+        assert -> "learn.graph" = data\format
+        assert -> 'input = data\nodes\x\role
+        assert -> 'parameter = data\nodes\w\role
+    ]
+
+    test "requires complete and known input feeds" [
+        model: graph [
+            x: input
+            y: input
+            total: x + y
+            loss: mean total
+        ]
+        missing?: throws? [forward.with: #[x: 1.0] model]
+        unknown?: throws? [forward.with: #[x: 1.0 y: 2.0 z: 3.0] model]
+        assert -> missing?
+        assert -> unknown?
+    ]
+
     test "discovers parameters in declaration order" [
         x: tensor [[1.0]]
         model: graph [
@@ -42,12 +78,14 @@ suite "graphs and optimization" [
     ]
 
     test "learns y = 2x + 1" [
-        x: tensor [[0.0] [1.0] [2.0] [3.0]]
-        y: tensor [[1.0] [3.0] [5.0] [7.0]]
+        xTrain: tensor [0.0 1.0 2.0 3.0]
+        yTrain: tensor [1.0 3.0 5.0 7.0]
         model: graph [
-            w: parameter.zeros [1 1]
-            b: parameter.zeros [1]
-            linear: matmul x w
+            x: input
+            y: input
+            w: parameter 0.0
+            b: parameter 0.0
+            linear: x * w
             prediction: linear + b
             residual: prediction - y
             squared: square residual
@@ -56,7 +94,7 @@ suite "graphs and optimization" [
         optimizer: sgd.rate: 0.05 (parameters model)
         do.times: 500 [
             zeroGrad model
-            forward model
+            forward.with: #[x: xTrain y: yTrain] model
             backward model\loss
             step optimizer
         ]

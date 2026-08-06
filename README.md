@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is a small, pure-Arturo foundation for differentiable programs. Version 0.1 provides owned dense tensors, reverse-mode automatic differentiation, named model graphs, and stateful SGD. It intentionally stops before high-level estimators: the first job is to prove that Arturo can express and train a model correctly.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.2 combines a small tensor/autograd runtime with an input-driven graph dialect whose structure can be inspected, explained, serialized, and eventually transformed or compiled.
 
 ## Example
 
@@ -8,13 +8,15 @@
 import "learn"!
 
 do [
-    x: tensor [[0.0] [1.0] [2.0] [3.0]]
-    y: tensor [[1.0] [3.0] [5.0] [7.0]]
+    xTrain: tensor [0.0 1.0 2.0 3.0]
+    yTrain: tensor [1.0 3.0 5.0 7.0]
 
     model: graph [
-        w: parameter.random [1 1]
-        b: parameter.zeros [1]
-        linear: matmul x w
+        x: input
+        y: input
+        w: parameter 0.0
+        b: parameter 0.0
+        linear: x * w
         prediction: linear + b
         residual: prediction - y
         squared: square residual
@@ -25,7 +27,7 @@ do [
 
     do.times: 500 [
         zeroGrad model
-        forward model
+        forward.with: #[x: xTrain y: yTrain] model
         backward model\loss
         step optimizer
     ]
@@ -47,7 +49,9 @@ Tensors contain floating-point `data`, `shape`, and row-major `strides`. Only ra
 
 ## Autograd and models
 
-`variable`, `backward`, `gradient`, `detach`, and `zeroGrad` form the autograd vocabulary. A graph evaluates its labeled block once to establish the operation DAG; `forward` then recomputes every recorded operation from the current parameter values. Graph fields are available dynamically (`model\loss`, `model\w`), and `parameters model` returns parameters in declaration order.
+`variable`, `backward`, `gradient`, `detach`, and `zeroGrad` form the autograd vocabulary. Scalar values are promoted automatically, so the smallest proof starts with `x: variable 2.0`.
+
+A graph evaluates its labeled block once to establish the operation DAG. `input` declares a placeholder and `forward.with:` supplies its runtime value. Graph fields are available dynamically (`model\loss`, `model\w`). `inputs`, `parameters`, and `operations` inspect its roles, while `graphData` returns a plain dictionary containing the graph order, nodes, shapes, operations, and parent relationships. `explain` renders that data for people.
 
 `sgd.rate: 0.05 (parameters model)` creates a stateful optimizer. `step` updates parameter tensor data while preserving graph identity.
 
@@ -61,4 +65,4 @@ arturo -p install unitt
 arturo examples/linear.art
 ```
 
-GPU execution, ranks above two, mixed dtypes, views, mutation APIs, neural-network layers, high-level estimators, and non-differentiable algorithms are outside the 0.1 milestone.
+GPU execution, ranks above two, mixed dtypes, views, mutation APIs, and native backends remain outside the current milestone.

@@ -1,7 +1,7 @@
 import relative {../src/learn}!
 
 do [
-    x: variable tensor 2.0
+    x: variable 2.0
     a: square x
     b: x * 3.0
     y: a + b

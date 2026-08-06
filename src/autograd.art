@@ -2,8 +2,14 @@
 
 import relative {./tensor}!
 
+lrValueId: function [][
+    high: random 0 2147483647
+    low: random 0 2147483647
+    return ~"|high|-|low|"
+]
+
 define :learnValue [
-    init: constructor [value gradient requiresGradient operation parents parameter]
+    init: constructor [id value gradient requiresGradient operation parents parameter]
 
     add: method [that][lrValueBinary this that 'add]
     sub: method [that][lrValueBinary this that 'sub]
@@ -26,13 +32,14 @@ define :learnValue [
 ]
 
 lrMakeValue: function [spec][
-    args: [null null null null null null]
-    set args 0 lrAsTensor spec\value
-    set args 1 null
-    set args 2 spec\requiresGradient
-    set args 3 spec\operation
-    set args 4 spec\parents
-    set args 5 spec\parameter
+    args: [null null null null null null null]
+    set args 0 lrValueId
+    set args 1 lrAsTensor spec\value
+    set args 2 null
+    set args 3 spec\requiresGradient
+    set args 4 spec\operation
+    set args 5 spec\parents
+    set args 6 spec\parameter
     return to :learnValue args
 ]
 
@@ -130,7 +137,7 @@ lrAccumulate: function [node contribution][
 ]
 
 lrContainsIdentity?: function [items sought][
-    loop items 'item [if same? item sought -> return true]
+    loop items 'item [if item\id = sought\id -> return true]
     return false
 ]
 

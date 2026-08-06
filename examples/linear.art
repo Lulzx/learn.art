@@ -1,13 +1,15 @@
 import relative {../src/learn}!
 
 do [
-    x: tensor [[0.0] [1.0] [2.0] [3.0]]
-    y: tensor [[1.0] [3.0] [5.0] [7.0]]
+    xTrain: tensor [0.0 1.0 2.0 3.0]
+    yTrain: tensor [1.0 3.0 5.0 7.0]
 
     model: graph [
-        w: parameter.random [1 1]
-        b: parameter.zeros [1]
-        linear: matmul x w
+        x: input
+        y: input
+        w: parameter 0.0
+        b: parameter 0.0
+        linear: x * w
         prediction: linear + b
         residual: prediction - y
         squared: square residual
@@ -18,7 +20,7 @@ do [
 
     do.times: 500 [
         zeroGrad model
-        forward model
+        forward.with: #[x: xTrain y: yTrain] model
         backward model\loss
         step optimizer
     ]

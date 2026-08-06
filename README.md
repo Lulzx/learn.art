@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.5 combines a small tensor/autograd runtime with inspectable models, neural composition, and graph-data transformations.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.6 combines a small tensor/autograd runtime with inspectable models, neural composition, graph transformations, and executable CPU schedules.
 
 ## Example
 
@@ -64,6 +64,8 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 ## Graph transformations
 
 `validateGraphData`, `deadCodeEliminate`, `commonSubexpressions`, and `optimizeGraph` analyze or rewrite the plain dictionary returned by `graphData`. `graphDot` exports the same representation for Graphviz visualization. These passes preserve the live eager graph and make lazy execution work explicit at the data boundary.
+
+`scheduleGraph data 'loss` applies constant folding, alias-preserving CSE, output pruning, and elementwise fusion planning. `executeCpu.with: feeds schedule` evaluates that immutable parameter snapshot using the pure-Arturo CPU reference backend.
 
 ## Development
 

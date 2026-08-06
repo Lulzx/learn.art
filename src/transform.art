@@ -77,10 +77,247 @@ commonSubexpressions: function [data][
     return groups
 ]
 
+lrTensorFromRecord: function [record][
+    unless and? [dictionary? record][and? [key? record 'shape][key? record 'data]] ->
+        panic "learn: malformed tensor record in graph data"
+    return lrMakeTensor record\shape record\data
+]
+
+lrParentValue: function [environment parent][
+    if literal? parent [
+        unless key? environment parent -> panic ~"learn: scheduled parent |parent| has no value"
+        return environment\[parent]
+    ]
+    unless dictionary? parent -> panic "learn: malformed inline graph constant"
+    unless and? [key? parent 'role][parent\role = 'constant] -> panic "learn: unsupported inline graph parent"
+    return lrTensorFromRecord parent\value
+]
+
+lrExecuteDataNode: function [node parentValues][
+    operation: node\operation
+    if operation = 'alias -> return parentValues\0
+    if operation = 'neg -> return lrTensorUnary parentValues\0 'neg
+    if operation = 'exp -> return lrTensorUnary parentValues\0 'exp
+    if operation = 'log -> return lrTensorUnary parentValues\0 'log
+    if operation = 'sigmoid -> return lrTensorUnary parentValues\0 'sigmoid
+    if operation = 'relu -> return lrTensorUnary parentValues\0 'relu
+    if operation = 'tanh -> return lrTensorUnary parentValues\0 'tanh
+    if operation = 'add -> return lrTensorBinary parentValues\0 parentValues\1 'add
+    if operation = 'sub -> return lrTensorBinary parentValues\0 parentValues\1 'sub
+    if operation = 'mul -> return lrTensorBinary parentValues\0 parentValues\1 'mul
+    if operation = 'div -> return lrTensorBinary parentValues\0 parentValues\1 'div
+    if operation = 'pow -> return lrTensorBinary parentValues\0 parentValues\1 'pow
+    if operation = 'sum -> return tensorSum parentValues\0
+    if operation = 'mean -> return mean parentValues\0
+    if operation = 'reshape -> return reshape parentValues\0 node\shape
+    if operation = 'transpose -> return transpose parentValues\0
+    if operation = 'matmul -> return matmul parentValues\0 parentValues\1
+    panic ~"learn: CPU backend does not support operation |operation|"
+]
+
+lrNodeWithParents: function [node nextParents][
+    return #[
+        role: node\role
+        operation: node\operation
+        shape: new node\shape
+        parents: nextParents
+        value: node\value
+    ]
+]
+
+lrGraphDataWithNodes: function [data nextOrder nextNodes nextInputs nextParameters][
+    return #[
+        format: data\format
+        version: data\version
+        inputs: nextInputs
+        parameters: nextParameters
+        order: nextOrder
+        nodes: nextNodes
+    ]
+]
+
+constantFold: function [data][
+    validateGraphData data
+    constants: lrFreshDictionary
+    nextNodes: lrFreshDictionary
+
+    loop data\order 'name [
+        node: data\nodes\[name]
+        nextNode: node
+        if node\role = 'constant [
+            constantValue: lrTensorFromRecord node\value
+            set constants name constantValue
+        ]
+        if node\role = 'operation [
+            foldable: true
+            parentValues: lrFreshBlock
+            loop node\parents 'parent [
+                if literal? parent [
+                    if key? constants parent -> 'parentValues ++ @[constants\[parent]]
+                    unless key? constants parent -> foldable: false
+                ]
+                unless literal? parent -> 'parentValues ++ @[lrParentValue constants parent]
+            ]
+            if foldable [
+                foldedValue: lrExecuteDataNode node parentValues
+                nextNode: #[
+                    role: 'constant
+                    operation: 'constant
+                    shape: new foldedValue\shape
+                    parents: lrFreshBlock
+                    value: lrTensorData foldedValue
+                ]
+                set constants name foldedValue
+            ]
+        ]
+        set nextNodes name nextNode
+    ]
+    return lrGraphDataWithNodes data (new data\order) nextNodes (new data\inputs) (new data\parameters)
+]
+
+eliminateCommonSubexpressions: function [data][
+    validateGraphData data
+    signatures: lrFreshDictionary
+    aliases: lrFreshDictionary
+    nextNodes: lrFreshDictionary
+
+    loop data\order 'name [
+        node: data\nodes\[name]
+        nextParents: lrFreshBlock
+        loop node\parents 'parent [
+            canonicalParent: parent
+            if and? [literal? parent][key? aliases parent] -> canonicalParent: aliases\[parent]
+            'nextParents ++ @[canonicalParent]
+        ]
+        nextNode: lrNodeWithParents node nextParents
+
+        if node\role = 'operation [
+            signature: to :string @[node\operation node\shape nextParents]
+            if key? signatures signature [
+                canonical: signatures\[signature]
+                set aliases name canonical
+                nextNode: #[
+                    role: 'alias
+                    operation: 'alias
+                    shape: new node\shape
+                    parents: @[canonical]
+                    value: null
+                ]
+            ]
+            unless key? signatures signature -> set signatures signature name
+        ]
+        set nextNodes name nextNode
+    ]
+    return lrGraphDataWithNodes data (new data\order) nextNodes (new data\inputs) (new data\parameters)
+]
+
 optimizeGraph: function [data outputName][
-    ; v0.5's executable-safe pass is reachability pruning. CSEs are reported
-    ; separately because merging named nodes would change dynamic graph access.
-    return deadCodeEliminate data outputName
+    folded: constantFold data
+    deduplicated: eliminateCommonSubexpressions folded
+    return deadCodeEliminate deduplicated outputName
+]
+
+lrFusibleOperation?: function [operation][
+    return contains? ['add 'sub 'mul 'div 'pow 'neg 'exp 'log 'sigmoid 'relu 'tanh 'alias] operation
+]
+
+fusionGroups: function [data][
+    validateGraphData data
+    groups: lrFreshBlock
+    current: lrFreshBlock
+
+    loop data\order 'name [
+        node: data\nodes\[name]
+        eligible: or? [node\role = 'alias][and? [node\role = 'operation][lrFusibleOperation? node\operation]]
+        connected: empty? current
+        unless empty? current [
+            connected: false
+            loop node\parents 'parent [
+                if and? [literal? parent][contains? current parent] -> connected: true
+            ]
+        ]
+        unless and? [eligible][connected] [
+            unless empty? current -> 'groups ++ @[current]
+            current: lrFreshBlock
+        ]
+        if eligible -> 'current ++ name
+    ]
+    unless empty? current -> 'groups ++ @[current]
+    return groups
+]
+
+scheduleGraph: function [data outputName][
+    optimized: optimizeGraph data outputName
+    output: to :literal outputName
+    groups: fusionGroups optimized
+    grouped: lrFreshDictionary
+    groupIndex: 0
+    loop groups 'group [
+        loop group 'name -> set grouped name groupIndex
+        groupIndex: groupIndex + 1
+    ]
+
+    emittedGroups: lrFreshBlock
+    steps: lrFreshBlock
+    loop optimized\order 'name [
+        node: optimized\nodes\[name]
+        if key? grouped name [
+            index: grouped\[name]
+            unless contains? emittedGroups index [
+                'steps ++ @[#[kind: 'fusion nodes: groups\[index]]]
+                'emittedGroups ++ index
+            ]
+        ]
+        unless key? grouped name [
+            stepKind: (contains? ['input 'parameter 'constant] node\role)? -> 'load -> 'kernel
+            'steps ++ @[#[kind: stepKind nodes: @[name]]]
+        ]
+    ]
+    return #[
+        format: "learn.schedule"
+        version: "0.6"
+        backend: 'cpu
+        output: output
+        graph: optimized
+        fusionGroups: groups
+        steps: steps
+    ]
+]
+
+executeCpu: function [schedule][
+    callAttrs: attrs
+    unless and? [dictionary? schedule][schedule\format = "learn.schedule"] -> panic "learn: executeCpu expects a schedule"
+    feeds: lrFreshDictionary
+    if key? callAttrs 'with -> feeds: callAttrs\with
+    unless dictionary? feeds -> panic "learn: executeCpu.with expects a dictionary"
+
+    data: schedule\graph
+    validateGraphData data
+    loop keys feeds 'feedName [
+        unless contains? data\inputs to :literal feedName -> panic ~"learn: CPU schedule has no input named |feedName|"
+    ]
+    environment: lrFreshDictionary
+    loop schedule\steps 'scheduledStep [
+        loop scheduledStep\nodes 'name [
+            node: data\nodes\[name]
+            value: null
+            if node\role = 'input [
+                unless key? feeds name -> panic ~"learn: CPU input |name| has not been provided"
+                value: lrAsTensor feeds\[name]
+            ]
+            if contains? ['parameter 'constant] node\role -> value: lrTensorFromRecord node\value
+            if or? [node\role = 'operation][node\role = 'alias] [
+                parentValues: lrFreshBlock
+                loop node\parents 'parent -> 'parentValues ++ @[lrParentValue environment parent]
+                value: lrExecuteDataNode node parentValues
+            ]
+            if null? value -> panic ~"learn: CPU backend cannot load node |name|"
+            set environment name value
+        ]
+    ]
+    outputValue: environment\[schedule\output]
+    if key? callAttrs 'all -> return #[value: outputValue values: environment schedule: schedule]
+    return outputValue
 ]
 
 graphDot: function [source][

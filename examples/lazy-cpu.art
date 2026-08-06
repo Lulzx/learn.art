@@ -1,0 +1,17 @@
+import relative {../src/learn}!
+
+model: graph [
+    x: input
+    w: parameter 2.0
+    firstProduct: x * w
+    repeatedProduct: x * w
+    total: firstProduct + repeatedProduct
+    loss: mean total
+]
+
+data: graphData model
+schedule: scheduleGraph data 'loss
+feed: #[x: tensor [1.0 2.0]]
+
+print executeCpu.with: feed schedule
+print schedule\fusionGroups

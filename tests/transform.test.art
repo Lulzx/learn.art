@@ -41,4 +41,98 @@ suite "graph transformations" [
         rejected?: throws? [deadCodeEliminate data 'missing]
         assert -> rejected?
     ]
+
+    test "folds operations whose parents are constants" [
+        nodes: lrFreshDictionary
+        set nodes 'left #[role: 'constant operation: 'constant shape: [] parents: [] value: #[shape: [] data: [2.0]]]
+        set nodes 'right #[role: 'constant operation: 'constant shape: [] parents: [] value: #[shape: [] data: [3.0]]]
+        set nodes 'total #[role: 'operation operation: 'add shape: [] parents: ['left 'right] value: null]
+        data: #[format: "learn.graph" version: "0.2" inputs: [] parameters: [] order: ['left 'right 'total] nodes: nodes]
+        folded: constantFold data
+        totalNode: folded\nodes\total
+        foldedValue: totalNode\value\data\0
+        assert -> 'constant = totalNode\role
+        assert -> 5.0 = foldedValue
+    ]
+
+    test "preserves duplicate names with aliases" [
+        model: graph [
+            x: input
+            w: parameter 2.0
+            firstProduct: x * w
+            repeatedProduct: x * w
+            total: firstProduct + repeatedProduct
+            loss: mean total
+        ]
+        data: graphData model
+        deduplicated: eliminateCommonSubexpressions data
+        aliasNode: deduplicated\nodes\repeatedProduct
+        totalParents: deduplicated\nodes\total\parents
+        assert -> 'alias = aliasNode\role
+        assert -> ['firstProduct] = aliasNode\parents
+        assert -> ['firstProduct 'firstProduct] = totalParents
+    ]
+
+    test "schedules fused work and executes it on CPU" [
+        model: graph [
+            x: input
+            w: parameter 2.0
+            firstProduct: x * w
+            repeatedProduct: x * w
+            total: firstProduct + repeatedProduct
+            loss: mean total
+        ]
+        feed: #[x: tensor [1.0 2.0]]
+        forward.with: feed model
+        eagerLoss: model\loss\value\data\0
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        cpuLoss: executeCpu.with: feed schedule
+        fullResult: executeCpu.all.with: feed schedule
+        cpuLossValue: cpuLoss\data\0
+        intermediateValues: fullResult\values
+        groups: schedule\fusionGroups
+        steps: schedule\steps
+        assert -> eagerLoss = cpuLossValue
+        assert -> key? intermediateValues 'total
+        assert -> 1 = size groups
+        assert -> (size steps) >= 4
+    ]
+
+    test "executes matrix kernels and reports missing feeds" [
+        xSeed: tensor.zeros [2 2]
+        xNode: lrInputFrom xSeed
+        model: graph [
+            x: xNode
+            w: parameter tensor [[2.0] [3.0]]
+            product: matmul x w
+            b: parameter tensor [1.0]
+            prediction: product + b
+        ]
+        data: graphData model
+        schedule: scheduleGraph data 'prediction
+        feed: #[x: tensor [[1.0 2.0] [3.0 4.0]]]
+        result: executeCpu.with: feed schedule
+        resultData: result\data
+        missingRejected: throws? [executeCpu schedule]
+        unknownRejected: throws? [executeCpu.with: #[unknown: 1.0] schedule]
+        assert -> [9.0 19.0] = resultData
+        assert -> missingRejected
+        assert -> unknownRejected
+    ]
+
+    test "freezes parameter values into the schedule" [
+        model: graph [
+            x: input
+            w: parameter 2.0
+            prediction: x * w
+        ]
+        data: graphData model
+        schedule: scheduleGraph data 'prediction
+        model\w\value\data: [3.0]
+        feed: #[x: tensor [2.0]]
+        scheduled: executeCpu.with: feed schedule
+        scheduledValue: scheduled\data\0
+        assert -> 4.0 = scheduledValue
+    ]
 ]

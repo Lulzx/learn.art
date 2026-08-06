@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.8 combines arbitrary-rank tensors and autograd with inspectable models, neural composition, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.9 combines arbitrary-rank, device-aware tensors and autograd with inspectable models, neural composition, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -44,8 +44,11 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 - `tensor value`, `tensor.zeros shape`, `tensor.ones shape`, and `tensor.random shape`
 - overloaded `+`, `-`, `*`, `/`, `^`, and unary `neg`
 - `shape`, `reshape`, `transpose`, `tensorAt`, `square`, `tensorSum`, `mean`, and `matmul`
+- `availableDevices`, `deviceOf`, `toDevice`, `tensorBuffer`, and `tensorFromBuffer`
 
 Tensors contain owned floating-point `data`, inferred `shape`, and row-major `strides`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices. `matmul` remains deliberately rank-2.
+
+Every tensor carries an explicit device. v0.9 provides the CPU device, `tensor.device: 'cpu`, differentiable `toDevice`, and an owned `learn.buffer`/`float64` interchange contract. Device metadata survives graph export, optimization, and scheduled execution; unsupported devices fail at the placement boundary.
 
 ## Autograd and models
 

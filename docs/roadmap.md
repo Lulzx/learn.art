@@ -8,7 +8,8 @@
 - v0.6: constant folding, CSE aliases, fusion schedules, CPU execution.
 - v0.7: optional compiled CPU fusion kernels with reference fallback.
 - v0.8: arbitrary-rank tensors, axis reductions, axis permutations, and safe scalar indexing.
+- v0.9: explicit CPU placement, differentiable transfers, and a versioned tensor-buffer contract.
 
 ## Next
 
-The next coherent milestone is device-aware storage: a backend-neutral tensor buffer contract, explicit device placement, transfer semantics, and CPU parity fixtures that can later admit GPU execution without changing tensor meaning.
+The next coherent milestone is model state: named state dictionaries, strict parameter restoration, and portable checkpoints built on the tensor-buffer contract.

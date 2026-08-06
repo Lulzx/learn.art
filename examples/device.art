@@ -1,0 +1,14 @@
+import relative {../src/learn}!
+
+do [
+    source: variable tensor.device: 'cpu [1 2 3]
+    moved: toDevice source 'cpu
+    loss: tensorSum square moved
+
+    backward loss
+
+    print availableDevices
+    print deviceOf moved
+    inspect tensorBuffer detach moved
+    print gradient source
+]

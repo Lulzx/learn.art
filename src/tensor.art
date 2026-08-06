@@ -17,7 +17,7 @@ lrArgs: function [count][
 ]
 
 define :learnTensor [
-    init: constructor [shape strides data]
+    init: constructor [shape strides data device]
 
     add: method [that][(is? :learnValue that)? -> lrValueBinary this that 'add -> lrTensorBinary this that 'add]
     sub: method [that][(is? :learnValue that)? -> lrValueBinary this that 'sub -> lrTensorBinary this that 'sub]
@@ -68,6 +68,18 @@ lrValidateShape: function [dims][
     return dims
 ]
 
+lrNormalizeDevice: function [requested][
+    device: requested
+    if string? device -> device: to :literal device
+    unless literal? device -> panic "learn: a tensor device must be a literal or string"
+    unless device = 'cpu -> panic ~"learn: device |device| is not available"
+    return device
+]
+
+availableDevices: function [][
+    return new ['cpu]
+]
+
 lrInferShape: function [source][
     if lrNumeric? source -> return lrFreshBlock
     unless block? source -> panic ~"learn: tensor values must be numeric or nested blocks, got |type source|"
@@ -93,22 +105,29 @@ lrFlattenTensorData: function [source output][
 ]
 
 lrMakeTensor: function [dims data][
+    return lrMakeTensorOn dims data 'cpu
+]
+
+lrMakeTensorOn: function [dims data requestedDevice][
     lrValidateShape dims
+    device: lrNormalizeDevice requestedDevice
     unless (lrCount dims) = (size data) ->
         panic ~"learn: shape |dims| requires |lrCount dims| values, got |size data|"
 
     floats: lrFreshBlock
     loop data 'item -> 'floats ++ lrFloat item
-    args: lrArgs 3
+    args: lrArgs 4
     set args 0 new dims
     set args 1 lrStrides dims
     set args 2 floats
+    set args 3 device
     result: to :learnTensor args
     ; Arturo may intern structurally equal constructor arguments. Reinstall
     ; owned blocks so equal tensors never share mutable storage.
     set result 'shape new dims
     set result 'strides lrStrides dims
     set result 'data new floats
+    set result 'device device
     return result
 ]
 
@@ -123,6 +142,8 @@ lrTensorFromData: function [source][
 
 tensor: function [source][
     callAttrs: attrs
+    requestedDevice: 'cpu
+    if key? callAttrs 'device -> requestedDevice: lrNormalizeDevice callAttrs\device
     makeZeros: key? callAttrs 'zeros
     makeOnes: key? callAttrs 'ones
     makeRandom: key? callAttrs 'random
@@ -140,10 +161,10 @@ tensor: function [source][
                 'data ++ value
             ]
         ]
-        return lrMakeTensor dims data
+        return lrMakeTensorOn dims data requestedDevice
     ]
-
-    return lrTensorFromData source
+    result: lrTensorFromData source
+    return lrMakeTensorOn result\shape result\data requestedDevice
 ]
 
 lrAsTensor: function [value][
@@ -156,6 +177,51 @@ shape: function [value][
     if is? :learnTensor value -> return new value\shape
     if is? :learnValue value -> return new value\value\shape
     panic ~"learn: shape expects a tensor or differentiable value, got |type value|"
+]
+
+deviceOf: function [value][
+    if is? :learnTensor value -> return value\device
+    if is? :learnValue value -> return value\value\device
+    panic ~"learn: deviceOf expects a tensor or differentiable value, got |type value|"
+]
+
+lrTensorTransfer: function [value requestedDevice][
+    source: lrAsTensor value
+    device: lrNormalizeDevice requestedDevice
+    return lrMakeTensorOn source\shape source\data device
+]
+
+toDevice: function [value requestedDevice][
+    if is? :learnValue value -> return lrValueTransfer value requestedDevice
+    return lrTensorTransfer value requestedDevice
+]
+
+tensorBuffer: function [value][
+    source: (is? :learnValue value)? -> value\value -> lrAsTensor value
+    return #[
+        format: "learn.buffer"
+        version: "0.9"
+        device: source\device
+        dtype: 'float64
+        count: size source\data
+        data: new source\data
+    ]
+]
+
+tensorFromBuffer: function [dims buffer][
+    lrValidateShape dims
+    unless dictionary? buffer -> panic "learn: tensorFromBuffer expects a buffer dictionary"
+    unless and? [key? buffer 'format][buffer\format = "learn.buffer"] -> panic "learn: unsupported tensor buffer format"
+    loop ['version 'device 'dtype 'count 'data] 'field [
+        unless key? buffer field -> panic ~"learn: tensor buffer is missing |field|"
+    ]
+    unless buffer\version = "0.9" -> panic ~"learn: tensor buffer version |buffer\version| is unsupported"
+    unless buffer\dtype = 'float64 -> panic ~"learn: tensor buffer dtype |buffer\dtype| is unsupported"
+    unless block? buffer\data -> panic "learn: tensor buffer data must be a block"
+    unless and? [integer? buffer\count][buffer\count >= 0] -> panic "learn: tensor buffer count must be a non-negative integer"
+    unless buffer\count = (size buffer\data) -> panic "learn: tensor buffer count does not match its data"
+    unless buffer\count = (lrCount dims) -> panic ~"learn: shape |dims| does not match buffer count |buffer\count|"
+    return lrMakeTensorOn dims buffer\data buffer\device
 ]
 
 lrBroadcastShape: function [left right][
@@ -234,12 +300,13 @@ tensorAt: function [value indices][
     if and? [integer? indices][(size source\shape) = 1] -> coordinates: @[indices]
     unless block? coordinates -> panic "learn: tensorAt expects an index block"
     offset: lrFlatIndex source\shape coordinates
-    return lrMakeTensor [] @[source\data\[offset]]
+    return lrMakeTensorOn [] @[source\data\[offset]] source\device
 ]
 
 lrTensorBinary: function [left right operation][
     a: lrAsTensor left
     b: lrAsTensor right
+    unless a\device = b\device -> panic ~"learn: tensor devices |a\device| and |b\device| do not match"
     dims: lrBroadcastShape a\shape b\shape
     data: lrFreshBlock
     count: lrCount dims
@@ -258,7 +325,7 @@ lrTensorBinary: function [left right operation][
             'data ++ value
         ]
     ]
-    return lrMakeTensor dims data
+    return lrMakeTensorOn dims data a\device
 ]
 
 lrTensorUnary: function [value operation][
@@ -287,7 +354,7 @@ lrTensorUnary: function [value operation][
         if null? result -> panic ~"learn: unknown unary tensor operation |operation|"
         'data ++ result
     ]
-    return lrMakeTensor source\shape data
+    return lrMakeTensorOn source\shape data source\device
 ]
 
 reshape: function [value dims][
@@ -296,7 +363,7 @@ reshape: function [value dims][
     lrValidateShape dims
     unless (lrCount dims) = (size source\data) ->
         panic ~"learn: cannot reshape |source\shape| to |dims|"
-    return lrMakeTensor dims source\data
+    return lrMakeTensorOn dims source\data source\device
 ]
 
 lrTransposeAxes: function [dims requestedAxes][
@@ -350,7 +417,7 @@ transpose: function [value][
             'data ++ source\data\[sourceIndex]
         ]
     ]
-    return lrMakeTensor outputShape data
+    return lrMakeTensorOn outputShape data source\device
 ]
 
 tensorSum: function [value][
@@ -360,7 +427,7 @@ tensorSum: function [value][
     unless null? requestedAxis -> return lrTensorReduceAxis source requestedAxis 'sum
     total: 0.0
     loop source\data 'item -> total: total + item
-    return lrMakeTensor [] @[total]
+    return lrMakeTensorOn [] @[total] source\device
 ]
 
 mean: function [value][
@@ -371,7 +438,7 @@ mean: function [value][
     if empty? source\data -> panic "learn: mean is undefined for an empty tensor"
     total: 0.0
     loop source\data 'item -> total: total + item
-    return lrMakeTensor [] @[total / size source\data]
+    return lrMakeTensorOn [] @[total / size source\data] source\device
 ]
 
 lrTensorReduceAxis: function [source requestedAxis operation][
@@ -399,7 +466,7 @@ lrTensorReduceAxis: function [source requestedAxis operation][
         divisor: source\shape\[axis]
         outputData: map outputData 'item -> item / divisor
     ]
-    return lrMakeTensor outputShape outputData
+    return lrMakeTensorOn outputShape outputData source\device
 ]
 
 square: function [value][
@@ -455,6 +522,7 @@ matmul: function [left right][
 
     a: lrAsTensor left
     b: lrAsTensor right
+    unless a\device = b\device -> panic ~"learn: tensor devices |a\device| and |b\device| do not match"
     unless and? [(size a\shape) = 2][(size b\shape) = 2] ->
         panic "learn: matmul requires two rank-2 tensors"
     unless a\shape\1 = b\shape\0 ->
@@ -476,7 +544,7 @@ matmul: function [left right][
             ]
         ]
     ]
-    return lrMakeTensor @[rows cols] data
+    return lrMakeTensorOn @[rows cols] data a\device
 ]
 
 lrTensorString: function [value][

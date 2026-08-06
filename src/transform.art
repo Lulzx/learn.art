@@ -67,7 +67,9 @@ commonSubexpressions: function [data][
         if node\role = 'operation [
             context: null
             if key? node 'context -> context: node\context
-            signature: to :string @[node\operation node\shape node\parents context]
+            device: 'cpu
+            if key? node 'device -> device: node\device
+            signature: to :string @[node\operation node\shape device node\parents context]
             names: lrFreshBlock
             if key? buckets signature -> names: new buckets\[signature]
             'names ++ name
@@ -82,7 +84,9 @@ commonSubexpressions: function [data][
 lrTensorFromRecord: function [record][
     unless and? [dictionary? record][and? [key? record 'shape][key? record 'data]] ->
         panic "learn: malformed tensor record in graph data"
-    return lrMakeTensor record\shape record\data
+    device: 'cpu
+    if key? record 'device -> device: record\device
+    return lrMakeTensorOn record\shape record\data device
 ]
 
 lrParentValue: function [environment parent][
@@ -132,6 +136,11 @@ lrExecuteDataNode: function [node parentValues][
         indices: node\context\indices
         return tensorAt source indices
     ]
+    if operation = 'transfer [
+        source: parentValues\0
+        device: node\context\device
+        return lrTensorTransfer source device
+    ]
     if operation = 'matmul -> return matmul parentValues\0 parentValues\1
     panic ~"learn: CPU backend does not support operation |operation|"
 ]
@@ -139,10 +148,13 @@ lrExecuteDataNode: function [node parentValues][
 lrNodeWithParents: function [node nextParents][
     context: null
     if key? node 'context -> context: node\context
+    device: 'cpu
+    if key? node 'device -> device: node\device
     return #[
         role: node\role
         operation: node\operation
         shape: new node\shape
+        device: device
         parents: nextParents
         context: context
         value: node\value
@@ -188,6 +200,7 @@ constantFold: function [data][
                     role: 'constant
                     operation: 'constant
                     shape: new foldedValue\shape
+                    device: foldedValue\device
                     parents: lrFreshBlock
                     context: null
                     value: lrTensorData foldedValue
@@ -219,7 +232,9 @@ eliminateCommonSubexpressions: function [data][
         if node\role = 'operation [
             context: null
             if key? node 'context -> context: node\context
-            signature: to :string @[node\operation node\shape nextParents context]
+            device: 'cpu
+            if key? node 'device -> device: node\device
+            signature: to :string @[node\operation node\shape device nextParents context]
             if key? signatures signature [
                 canonical: signatures\[signature]
                 set aliases name canonical
@@ -227,6 +242,7 @@ eliminateCommonSubexpressions: function [data][
                     role: 'alias
                     operation: 'alias
                     shape: new node\shape
+                    device: device
                     parents: @[canonical]
                     context: null
                     value: null
@@ -332,6 +348,7 @@ executeCpu: function [schedule][
             if node\role = 'input [
                 unless key? feeds name -> panic ~"learn: CPU input |name| has not been provided"
                 value: lrAsTensor feeds\[name]
+                unless value\device = 'cpu -> panic ~"learn: CPU input |name| must be on cpu"
             ]
             if contains? ['parameter 'constant] node\role -> value: lrTensorFromRecord node\value
             if or? [node\role = 'operation][node\role = 'alias] [

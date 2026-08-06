@@ -1,0 +1,73 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "device-aware storage" [
+    test "places tensors explicitly on CPU" [
+        value: tensor.device: 'cpu [[1 2] [3 4]]
+        copied: toDevice value "cpu"
+        set copied\data 0 99.0
+        assert -> ['cpu] = availableDevices
+        assert -> 'cpu = deviceOf value
+        assert -> 'cpu = deviceOf copied
+        assert -> 1.0 = value\data\0
+        assert -> 99.0 = copied\data\0
+    ]
+
+    test "round-trips owned versioned buffers" [
+        value: tensor [[1 2] [3 4]]
+        buffer: tensorBuffer value
+        restored: tensorFromBuffer [2 2] buffer
+        set buffer\data 0 99.0
+        assert -> "learn.buffer" = buffer\format
+        assert -> "0.9" = buffer\version
+        assert -> 'float64 = buffer\dtype
+        assert -> 4 = buffer\count
+        assert -> [1.0 2.0 3.0 4.0] = restored\data
+        assert -> 1.0 = value\data\0
+    ]
+
+    test "rejects unavailable devices and malformed buffers" [
+        unavailable?: throws? [tensor.device: 'gpu [1 2]]
+        wrongCount: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: 'float64 count: 3 data: [1.0 2.0]]
+        countRejected?: throws? [tensorFromBuffer [2] wrongCount]
+        wrongDtype: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: 'float32 count: 2 data: [1.0 2.0]]
+        dtypeRejected?: throws? [tensorFromBuffer [2] wrongDtype]
+        wrongVersion: #[format: "learn.buffer" version: "1.0" device: 'cpu dtype: 'float64 count: 2 data: [1.0 2.0]]
+        versionRejected?: throws? [tensorFromBuffer [2] wrongVersion]
+        assert -> unavailable?
+        assert -> countRejected?
+        assert -> dtypeRejected?
+        assert -> versionRejected?
+    ]
+
+    test "differentiates transfers" [
+        x: variable tensor [1 2 3]
+        moved: toDevice x 'cpu
+        loss: tensorSum square moved
+        backward loss
+        gx: gradient x
+        assert -> 'cpu = deviceOf gx
+        assert -> [2.0 4.0 6.0] = gx\data
+    ]
+
+    test "preserves device metadata across graph and CPU execution" [
+        xNode: lrInputFrom tensor.device: 'cpu [0 0]
+        model: graph [
+            x: xNode
+            moved: toDevice x 'cpu
+            scaled: moved * 2.0
+            result: mean scaled
+        ]
+        feed: #[x: tensor.device: 'cpu [2 4]]
+        forward.with: feed model
+        eager: model\result\value
+        data: graphData model
+        schedule: scheduleGraph data 'result
+        cpu: executeCpu.with: feed schedule
+        assert -> 'cpu = data\nodes\x\device
+        assert -> 'cpu = data\nodes\moved\context\device
+        assert -> 'cpu = data\nodes\result\device
+        assert -> eager\data = cpu\data
+        assert -> [6.0] = cpu\data
+    ]
+]

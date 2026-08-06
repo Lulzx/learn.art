@@ -23,7 +23,8 @@
 - v0.21: confusion matrices, per-class and macro reports, and mergeable streaming classification meters.
 - v0.22: immutable executable inference snapshots with optional preprocessing and a safe portable artifact codec.
 - v0.23: named input gradients, indexed saliency, and baseline-integrated gradients with state restoration.
+- v0.24: pluggable device backends and reusable compiled MPSGraph inference through `arturo-metal`.
 
 ## Next
 
-The next coherent milestone is model calibration: top-k predictions, reliability bins, expected calibration error, and temperature scaling.
+The next coherent milestone is GPU-resident training, beginning with an end-to-end MNIST MLP and reusable optimizer-state execution.

@@ -1,0 +1,204 @@
+lrMetalLibrary: "vendor/metal/build/libarturo_metal.dylib"
+if key? env 'LEARN_METAL_LIBRARY -> lrMetalLibrary: env\LEARN_METAL_LIBRARY
+unless file? lrMetalLibrary -> panic ~"learn: Metal library not found at |lrMetalLibrary|; build vendor/metal or set LEARN_METAL_LIBRARY"
+
+; Optional MPS backend backed by the vendored arturo-metal package.
+import relative {../vendor/metal/src/metal}!
+import relative {./learn}!
+metalUseLibrary lrMetalLibrary
+
+define :learnMetalArtifact [
+    init: constructor [schedule metalGraph program frozen context released]
+]
+
+lrMetalState: #[runtime: null]
+
+lrMetalBackendAvailable: function [][
+    return and? [not? null? lrMetalState\runtime][metalAvailable?]
+]
+
+lrMetalUpload: function [dims data][
+    if null? lrMetalState\runtime -> panic "learn: Metal backend has not been enabled"
+    base: metalTensorFrom lrMetalState\runtime data
+    if base\shape = dims -> return base
+    result: metalReshape base dims
+    metalRelease base
+    return result
+]
+
+lrMetalDownload: function [storage][
+    return metalDownload storage
+]
+
+lrMetalReleaseStorage: function [storage][
+    metalRelease storage
+    return null
+]
+
+lrMetalSynchronize: function [][
+    metalSynchronize lrMetalState\runtime
+    return null
+]
+
+enableMetalBackend: function [][
+    if null? lrMetalState\runtime -> set lrMetalState 'runtime metalContext
+    registerBackend 'mps #[
+        available: 'lrMetalBackendAvailable
+        upload: 'lrMetalUpload
+        download: 'lrMetalDownload
+        release: 'lrMetalReleaseStorage
+        synchronize: 'lrMetalSynchronize
+        compile: 'compileMps
+        execute: 'executeMps
+    ]
+    return 'mps
+]
+
+lrMetalRecordTensor: function [record][
+    return lrMetalUpload record\shape record\data
+]
+
+lrMetalLeaf: function [artifact name node environment][
+    graphNode: metalGraphInput artifact\metalGraph name node\shape
+    set environment name graphNode
+    unless node\role = 'input [
+        frozenTensor: lrMetalRecordTensor node\value
+        set artifact\frozen name frozenTensor
+    ]
+    return graphNode
+]
+
+lrMetalParent: function [artifact environment parent][
+    if literal? parent [
+        unless key? environment parent -> panic ~"learn: MPS parent |parent| is unavailable"
+        return environment\[parent]
+    ]
+    unless and? [dictionary? parent][and? [key? parent 'role][parent\role = 'constant]] -> panic "learn: malformed inline MPS constant"
+    frozenKeys: keys artifact\frozen
+    index: size frozenKeys
+    name: to :literal ~"lrInline|index|"
+    record: parent\value
+    graphNode: metalGraphInput artifact\metalGraph name record\shape
+    set artifact\frozen name lrMetalRecordTensor record
+    return graphNode
+]
+
+lrMetalParents: function [artifact environment node][
+    result: lrFreshBlock
+    loop node\parents 'parent -> 'result ++ @[lrMetalParent artifact environment parent]
+    return result
+]
+
+lrMetalReduceAll: function [source operation][
+    result: source
+    rank: size source\shape
+    if rank > 0 [loop 1..rank 'unused [
+        if operation = 'sum -> result: metalGraphSum result 0
+        if operation = 'mean -> result: metalGraphMean result 0
+    ]]
+    return result
+]
+
+lrMetalOperation: function [artifact environment name node][
+    parents: lrMetalParents artifact environment node
+    operation: node\operation
+    if operation = 'alias -> return parents\0
+    if operation = 'transfer -> return parents\0
+    if operation = 'neg -> return metalGraphNeg parents\0
+    if operation = 'exp -> return metalGraphExp parents\0
+    if operation = 'log -> return metalGraphLog parents\0
+    if operation = 'sigmoid -> return metalGraphSigmoid parents\0
+    if operation = 'relu -> return metalGraphRelu parents\0
+    if operation = 'tanh -> return metalGraphTanh parents\0
+    if operation = 'softmax -> return metalGraphSoftmax parents\0 ((size parents\0\shape) - 1)
+    if operation = 'crossEntropy -> return metalGraphCrossEntropy parents\0 parents\1
+    if operation = 'dropout [
+        unless node\context\training -> return parents\0
+        passSeed: node\context\seed + node\context\pass
+        return metalGraphDropout.rate: node\context\rate.seed: passSeed parents\0
+    ]
+    if operation = 'dense [
+        projected: metalGraphMatmul parents\0 parents\1
+        return metalGraphAdd projected parents\2
+    ]
+    if operation = 'add -> return metalGraphAdd parents\0 parents\1
+    if operation = 'sub -> return metalGraphSub parents\0 parents\1
+    if operation = 'mul -> return metalGraphMul parents\0 parents\1
+    if operation = 'div -> return metalGraphDiv parents\0 parents\1
+    if operation = 'pow -> return metalGraphPow parents\0 parents\1
+    if operation = 'sum -> return lrMetalReduceAll parents\0 'sum
+    if operation = 'mean -> return lrMetalReduceAll parents\0 'mean
+    if operation = 'sumAxis -> return metalGraphSum parents\0 node\context\axis
+    if operation = 'meanAxis -> return metalGraphMean parents\0 node\context\axis
+    if operation = 'reshape -> return metalGraphReshape parents\0 node\shape
+    if operation = 'transpose -> return metalGraphTranspose parents\0 node\context\axes
+    if operation = 'matmul -> return metalGraphMatmul parents\0 parents\1
+    panic ~"learn: MPS backend does not support operation |operation| at |name|"
+]
+
+compileMps: function [schedule][
+    unless and? [dictionary? schedule][schedule\format = "learn.schedule"] -> panic "learn: compileMps expects a schedule"
+    metalProgramGraph: metalGraph lrMetalState\runtime
+    artifact: to :learnMetalArtifact @[schedule metalProgramGraph null lrFreshDictionary lrMetalState\runtime false]
+    set artifact 'frozen lrFreshDictionary
+    environment: lrFreshDictionary
+    data: schedule\graph
+    loop data\order 'name [
+        node: data\nodes\[name]
+        graphNode: null
+        if contains? ['input 'parameter 'constant] node\role -> graphNode: lrMetalLeaf artifact name node environment
+        if or? [node\role = 'operation][node\role = 'alias] -> graphNode: lrMetalOperation artifact environment name node
+        if null? graphNode -> panic ~"learn: MPS backend cannot lower node |name|"
+        set environment name graphNode
+    ]
+    outputNode: environment\[schedule\output]
+    artifact\program: metalCompile metalProgramGraph @[outputNode]
+    return artifact
+]
+
+lrMetalFeedTensor: function [value temporaryList][
+    source: lrAsTensor value
+    if and? [source\device = 'mps][not? null? source\storage] -> return source\storage
+    uploaded: lrMetalUpload source\shape source\data
+    'temporaryList ++ @[uploaded]
+    return uploaded
+]
+
+executeMps: function [artifact][
+    callAttrs: attrs
+    unless is? :learnMetalArtifact artifact -> panic "learn: executeMps expects a compiled Metal artifact"
+    if artifact\released -> panic "learn: Metal artifact has been released"
+    feeds: lrFreshDictionary
+    if key? callAttrs 'with -> feeds: callAttrs\with
+    unless dictionary? feeds -> panic "learn: executeMps.with expects a dictionary"
+    runtimeFeeds: lrFreshDictionary
+    temporaries: lrFreshBlock
+    loop artifact\program\inputs 'placeholder [
+        value: null
+        if key? artifact\frozen placeholder\name -> value: artifact\frozen\[placeholder\name]
+        unless key? artifact\frozen placeholder\name [
+            unless key? feeds placeholder\name -> panic ~"learn: MPS input |placeholder\name| has not been provided"
+            value: lrMetalFeedTensor feeds\[placeholder\name] temporaries
+        ]
+        set runtimeFeeds placeholder\name value
+    ]
+    results: metalRun.with: runtimeFeeds artifact\program
+    output: results\0
+    data: metalDownload output
+    result: lrMakeTensorWithStorage output\shape data 'mps output
+    loop temporaries 'temporary -> metalRelease temporary
+    return result
+]
+
+releaseMps: function [artifact][
+    unless is? :learnMetalArtifact artifact -> panic "learn: releaseMps expects a Metal artifact"
+    unless artifact\released [
+        loop values artifact\frozen 'value -> metalRelease value
+        metalRelease artifact\program
+        metalRelease artifact\metalGraph
+        artifact\released: true
+    ]
+    return null
+]
+
+enableMetalBackend

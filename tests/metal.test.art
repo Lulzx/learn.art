@@ -1,0 +1,71 @@
+import'unitt!
+import relative {../src/metal-backend}!
+
+suite "Metal backend" [
+    test "registers MPS and owns device storage" [
+        value: tensor.device: 'mps [[1.0 2.0] [3.0 4.0]]
+        devices: availableDevices
+        assert -> contains? devices 'cpu
+        assert -> contains? devices 'mps
+        assert -> 'mps = deviceOf value
+        assert -> not? null? value\storage
+        releaseTensor value
+        assert -> null? value\storage
+    ]
+
+    test "compiles and reuses dense schedules" [
+        xNode: lrInputFrom tensor.zeros [2 2]
+        model: graph [
+            x: xNode
+            w: parameter tensor [[2.0] [3.0]]
+            projected: matmul x w
+            b: parameter tensor [1.0]
+            prediction: projected + b
+            activated: relu prediction
+            loss: mean activated
+        ]
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        firstFeed: #[x: tensor [[1.0 2.0] [3.0 4.0]]]
+        secondFeed: #[x: tensor [[0.0 1.0] [1.0 0.0]]]
+        firstCpu: executeCpu.with: firstFeed schedule
+        secondCpu: executeCpu.with: secondFeed schedule
+        artifact: compileMps schedule
+        firstGpu: executeMps.with: firstFeed artifact
+        secondGpu: executeMps.with: secondFeed artifact
+        firstDelta: firstCpu\data\0 - firstGpu\data\0
+        secondDelta: secondCpu\data\0 - secondGpu\data\0
+        firstDifference: abs firstDelta
+        secondDifference: abs secondDelta
+        assert -> firstDifference < 0.00001
+        assert -> secondDifference < 0.00001
+        assert -> 'mps = deviceOf firstGpu
+        releaseTensor firstGpu
+        releaseTensor secondGpu
+        releaseMps artifact
+    ]
+
+    test "matches CPU cross entropy" [
+        logitsNode: lrInputFrom tensor.zeros [2 3]
+        labelsNode: lrInputFrom tensor.zeros [2]
+        model: graph [
+            logits: logitsNode
+            labels: labelsNode
+            probabilities: softmax logits
+            loss: crossEntropy logits labels
+        ]
+        scores: tensor [[2.0 1.0 0.0] [0.0 1.0 2.0]]
+        labels: tensor [0.0 2.0]
+        feed: #[logits: scores labels: labels]
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        cpu: executeCpu.with: feed schedule
+        artifact: compileMps schedule
+        gpu: executeMps.with: feed artifact
+        delta: cpu\data\0 - gpu\data\0
+        difference: abs delta
+        assert -> difference < 0.00001
+        releaseTensor gpu
+        releaseMps artifact
+    ]
+]

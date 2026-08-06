@@ -1,5 +1,7 @@
 ; Dense, owned, row-major tensors of arbitrary rank.
 
+import relative {./backend}!
+
 lrFreshDictionary: function [][
     ; Empty literals are reused by Arturo 0.10. A dynamically allocated block
     ; prevents mutable state from leaking between calls.
@@ -17,7 +19,7 @@ lrArgs: function [count][
 ]
 
 define :learnTensor [
-    init: constructor [shape strides data device]
+    init: constructor [shape strides data device storage]
 
     add: method [that][(is? :learnValue that)? -> lrValueBinary this that 'add -> lrTensorBinary this that 'add]
     sub: method [that][(is? :learnValue that)? -> lrValueBinary this that 'sub -> lrTensorBinary this that 'sub]
@@ -154,12 +156,8 @@ lrNormalizeDevice: function [requested][
     device: requested
     if string? device -> device: to :literal device
     unless literal? device -> panic "learn: a tensor device must be a literal or string"
-    unless device = 'cpu -> panic ~"learn: device |device| is not available"
+    unless backendAvailable? device -> panic ~"learn: device |device| is not available"
     return device
-]
-
-availableDevices: function [][
-    return new ['cpu]
 ]
 
 lrInferShape: function [source][
@@ -198,19 +196,36 @@ lrMakeTensorOn: function [dims data requestedDevice][
 
     floats: lrFreshBlock
     loop data 'item -> 'floats ++ lrFloat item
-    args: lrArgs 4
+    storage: null
+    unless device = 'cpu -> storage: lrBackendCall device 'upload @[dims floats]
+    return lrMakeTensorWithStorage dims floats device storage
+]
+
+lrMakeTensorWithStorage: function [dims data device storage][
+    args: lrArgs 5
     set args 0 new dims
     set args 1 lrStrides dims
-    set args 2 floats
+    set args 2 data
     set args 3 device
+    set args 4 storage
     result: to :learnTensor args
     ; Arturo may intern structurally equal constructor arguments. Reinstall
     ; owned blocks so equal tensors never share mutable storage.
     set result 'shape new dims
     set result 'strides lrStrides dims
-    set result 'data new floats
+    set result 'data new data
     set result 'device device
+    set result 'storage storage
     return result
+]
+
+releaseTensor: function [value][
+    source: (is? :learnValue value)? -> value\value -> lrAsTensor value
+    unless null? source\storage [
+        lrBackendCall source\device 'release @[source\storage]
+        source\storage: null
+    ]
+    return null
 ]
 
 lrTensorFromData: function [source][

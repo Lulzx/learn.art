@@ -1,0 +1,3 @@
+[submodule "vendor/metal"]
+	path = vendor/metal
+	url = https://github.com/Lulzx/arturo-metal.git

@@ -1,0 +1,57 @@
+; Pluggable execution and storage backends.
+
+lrBackendFreshDictionary: function [][
+    return to :dictionary array 0
+]
+
+lrBackendRegistry: lrBackendFreshDictionary
+
+lrCpuBackendAvailable: function [][true]
+
+set lrBackendRegistry 'cpu #[
+    name: 'cpu
+    available: 'lrCpuBackendAvailable
+]
+
+registerBackend: function [requestedName descriptor][
+    name: to :literal requestedName
+    unless dictionary? descriptor -> panic "learn: backend descriptor must be a dictionary"
+    unless key? descriptor 'available -> panic "learn: backend descriptor requires an available callback"
+    next: new descriptor
+    set next 'name name
+    set lrBackendRegistry name next
+    return name
+]
+
+backendRegistered?: function [requestedName][
+    name: to :literal requestedName
+    return key? lrBackendRegistry name
+]
+
+backendAvailable?: function [requestedName][
+    name: to :literal requestedName
+    unless key? lrBackendRegistry name -> return false
+    descriptor: lrBackendRegistry\[name]
+    return call descriptor\available []
+]
+
+availableDevices: function [][
+    result: remove (array 0) 0
+    loop keys lrBackendRegistry 'name [
+        if backendAvailable? name -> 'result ++ to :literal name
+    ]
+    return result
+]
+
+lrBackend: function [requestedName][
+    name: to :literal requestedName
+    unless backendAvailable? name -> panic ~"learn: device |name| is not available"
+    return lrBackendRegistry\[name]
+]
+
+lrBackendCall: function [requestedName operation arguments][
+    descriptor: lrBackend requestedName
+    unless key? descriptor operation -> panic ~"learn: backend |requestedName| does not support |operation|"
+    callback: descriptor\[operation]
+    return call callback arguments
+]

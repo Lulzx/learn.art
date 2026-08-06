@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.23 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass telemetry, deterministic model composition, portable inference, gradient explainability, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.24 adds a pluggable backend registry and optional compiled MPSGraph execution through the vendored [`arturo-metal`](https://github.com/Lulzx/arturo-metal) package.
 
 ## Example
 
@@ -46,7 +46,7 @@ Tensors contain owned floating-point `data`, inferred `shape`, and row-major `st
 
 `matmul` follows the usual generalized rules: two vectors produce a scalar dot product, matrix–vector and vector–matrix products remove the promoted unit dimension, and rank-2-or-higher operands broadcast their leading batch dimensions. The same shapes and batch accumulation rules apply to reverse-mode gradients and scheduled CPU execution.
 
-Every tensor carries an explicit device. v0.9 provides the CPU device, `tensor.device: 'cpu`, differentiable `toDevice`, and an owned `learn.buffer`/`float64` interchange contract. Device metadata survives graph export, optimization, and scheduled execution; unsupported devices fail at the placement boundary.
+Every tensor carries an explicit device. CPU support is always registered; importing `src/metal-backend.art` adds `mps` on supported Apple silicon. `registerBackend`, `backendAvailable?`, and `availableDevices` expose the registry, while `releaseTensor` explicitly frees non-CPU storage. Device metadata survives graph export, optimization, and scheduled execution.
 
 ## Autograd and models
 
@@ -128,6 +128,8 @@ Dense layers use Xavier initialization with seed `0` by default; pass `denseLaye
 
 `compileNativeCpu schedule` lowers eligible fusion groups to generated C when `clang` is available. `executeNativeCpu.with: feeds artifact` uses those kernels and automatically falls back to the reference backend for unsupported groups or dynamic shapes.
 
+On macOS, build the vendored backend once with `cd vendor/metal && arturo scripts/build.art`. Import `src/metal-backend.art`, then use `compileMps schedule` and `executeMps.with: feeds artifact` for reusable compiled MPSGraph execution. Set `LEARN_METAL_LIBRARY` to override the dylib path. Dense math, broadcasting, reductions, activations, softmax, dropout, and cross entropy are lowered without CPU operator dispatch; `releaseMps` frees the compiled artifact.
+
 ## Development
 
 The package requires Arturo 0.10.0 and uses [unitt](https://github.com/RickBarretto/unitt):
@@ -149,4 +151,4 @@ arturo examples/explainability.art
 arturo examples/native-cpu.art
 ```
 
-GPU execution, mixed dtypes, slice views, mutation APIs, and additional native backends remain outside the current milestone.
+The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Mixed dtypes, slice views, and mutation APIs remain outside the current milestone.

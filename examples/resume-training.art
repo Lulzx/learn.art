@@ -1,0 +1,17 @@
+import relative {../src/learn}!
+
+do [
+    model: graph [p: parameter 1.0]
+    optimizer: adam.rate: 0.01 (parameters model)
+
+    model\p\gradient: tensor 2.0
+    step optimizer
+    saveTrainingCheckpoint model optimizer "/tmp/learn-art-training.state"
+
+    model\p\gradient: tensor 4.0
+    step optimizer
+
+    loadTrainingCheckpoint model optimizer "/tmp/learn-art-training.state"
+    print model\p
+    print optimizer\timestep
+]

@@ -293,6 +293,9 @@ adam: function [parameterList][
     if key? callAttrs 'beta2 -> beta2: callAttrs\beta2
     if key? callAttrs 'epsilon -> epsilon: callAttrs\epsilon
     unless and? [lrNumeric? rate][rate > 0.0] -> panic "learn: Adam rate must be positive"
+    unless and? [lrNumeric? beta1][and? [beta1 >= 0.0][beta1 < 1.0]] -> panic "learn: Adam beta1 must be in [0, 1)"
+    unless and? [lrNumeric? beta2][and? [beta2 >= 0.0][beta2 < 1.0]] -> panic "learn: Adam beta2 must be in [0, 1)"
+    unless and? [lrNumeric? epsilon][epsilon > 0.0] -> panic "learn: Adam epsilon must be positive"
     lrValidateParameters parameterList
     firstMoments: lrFreshBlock
     secondMoments: lrFreshBlock

@@ -88,15 +88,137 @@ loadStateDict: function [model state][
     unless logical? strict -> panic "learn: loadStateDict.strict must be logical"
 
     validated: lrValidateState model state strict
+    lrApplyValidatedState validated
+    return model
+]
+
+lrApplyValidatedState: function [validated][
     loop keys validated\restored 'name [
         parameter: validated\named\[name]
         restored: validated\restored\[name]
         parameter\value\data: new restored\data
     ]
-    return model
+    return null
+]
+
+lrTensorState: function [value][
+    return #[shape: new value\shape buffer: tensorBuffer value]
+]
+
+lrTensorStates: function [items][
+    result: lrFreshBlock
+    loop items 'item -> 'result ++ @[lrTensorState item]
+    return result
+]
+
+optimizerState: function [optimizer][
+    if is? :learnSgd optimizer -> return #[
+        format: "learn.optimizer-state" version: "0.12" kind: 'sgd
+        parameterCount: size optimizer\parameterList
+        hyperparameters: #[rate: optimizer\rate]
+        slots: lrFreshDictionary
+    ]
+    if is? :learnMomentum optimizer -> return #[
+        format: "learn.optimizer-state" version: "0.12" kind: 'momentum
+        parameterCount: size optimizer\parameterList
+        hyperparameters: #[rate: optimizer\rate beta: optimizer\beta]
+        slots: #[velocities: lrTensorStates optimizer\velocities]
+    ]
+    if is? :learnAdam optimizer -> return #[
+        format: "learn.optimizer-state" version: "0.12" kind: 'adam
+        parameterCount: size optimizer\parameterList
+        hyperparameters: #[rate: optimizer\rate beta1: optimizer\beta1 beta2: optimizer\beta2 epsilon: optimizer\epsilon timestep: optimizer\timestep]
+        slots: #[firstMoments: lrTensorStates optimizer\firstMoments secondMoments: lrTensorStates optimizer\secondMoments]
+    ]
+    panic "learn: optimizerState expects an optimizer"
+]
+
+lrOptimizerKind: function [optimizer][
+    if is? :learnSgd optimizer -> return 'sgd
+    if is? :learnMomentum optimizer -> return 'momentum
+    if is? :learnAdam optimizer -> return 'adam
+    panic "learn: optimizer state expects an optimizer"
+]
+
+lrRestoreSlotList: function [optimizer entries slotName][
+    unless block? entries -> panic ~"learn: optimizer slot |slotName| must be a block"
+    unless (size entries) = (size optimizer\parameterList) -> panic ~"learn: optimizer slot |slotName| has the wrong count"
+    restored: lrFreshBlock
+    if not? empty? entries [
+        loop 0..((size entries) - 1) 'slotIndex [
+            entry: entries\[slotIndex]
+            unless and? [dictionary? entry][and? [key? entry 'shape][key? entry 'buffer]] -> panic ~"learn: optimizer slot |slotName| is malformed"
+            param: optimizer\parameterList\[slotIndex]
+            unless entry\shape = param\value\shape -> panic ~"learn: optimizer slot |slotName| shape does not match parameter |slotIndex|"
+            restoredValue: tensorFromBuffer entry\shape entry\buffer
+            unless restoredValue\device = param\value\device -> panic ~"learn: optimizer slot |slotName| device does not match parameter |slotIndex|"
+            'restored ++ @[restoredValue]
+        ]
+    ]
+    return restored
+]
+
+lrValidateOptimizerState: function [optimizer state][
+    kind: lrOptimizerKind optimizer
+    unless dictionary? state -> panic "learn: optimizer state must be a dictionary"
+    unless and? [key? state 'format][state\format = "learn.optimizer-state"] -> panic "learn: unsupported optimizer state format"
+    unless and? [key? state 'version][state\version = "0.12"] -> panic "learn: unsupported optimizer state version"
+    unless and? [key? state 'kind][state\kind = kind] -> panic ~"learn: optimizer state kind does not match |kind|"
+    unless and? [key? state 'parameterCount][state\parameterCount = (size optimizer\parameterList)] -> panic "learn: optimizer state parameter count does not match"
+    unless and? [key? state 'hyperparameters][dictionary? state\hyperparameters] -> panic "learn: optimizer state hyperparameters are malformed"
+    unless and? [key? state 'slots][dictionary? state\slots] -> panic "learn: optimizer state slots are malformed"
+
+    hyper: state\hyperparameters
+    unless and? [key? hyper 'rate][and? [lrNumeric? hyper\rate][hyper\rate > 0.0]] -> panic "learn: optimizer state rate must be positive"
+    restored: lrFreshDictionary
+    if kind = 'momentum [
+        unless and? [key? hyper 'beta][and? [hyper\beta >= 0.0][hyper\beta < 1.0]] -> panic "learn: optimizer state beta is invalid"
+        unless key? state\slots 'velocities -> panic "learn: optimizer state is missing velocities"
+        set restored 'velocities lrRestoreSlotList optimizer state\slots\velocities 'velocities
+    ]
+    if kind = 'adam [
+        loop ['beta1 'beta2] 'field [
+            unless and? [key? hyper field][and? [hyper\[field] >= 0.0][hyper\[field] < 1.0]] -> panic ~"learn: optimizer state |field| is invalid"
+        ]
+        unless and? [key? hyper 'epsilon][hyper\epsilon > 0.0] -> panic "learn: optimizer state epsilon must be positive"
+        unless and? [key? hyper 'timestep][and? [integer? hyper\timestep][hyper\timestep >= 0]] -> panic "learn: optimizer state timestep is invalid"
+        unless and? [key? state\slots 'firstMoments][key? state\slots 'secondMoments] -> panic "learn: optimizer state is missing Adam moments"
+        set restored 'firstMoments lrRestoreSlotList optimizer state\slots\firstMoments 'firstMoments
+        set restored 'secondMoments lrRestoreSlotList optimizer state\slots\secondMoments 'secondMoments
+    ]
+    return #[optimizer: optimizer kind: kind hyperparameters: hyper restored: restored]
+]
+
+lrApplyValidatedOptimizerState: function [validated][
+    optimizer: validated\optimizer
+    hyper: validated\hyperparameters
+    optimizer\rate: to :floating hyper\rate
+    if validated\kind = 'momentum [
+        optimizer\beta: to :floating hyper\beta
+        optimizer\velocities: validated\restored\velocities
+    ]
+    if validated\kind = 'adam [
+        optimizer\beta1: to :floating hyper\beta1
+        optimizer\beta2: to :floating hyper\beta2
+        optimizer\epsilon: to :floating hyper\epsilon
+        optimizer\timestep: hyper\timestep
+        optimizer\firstMoments: validated\restored\firstMoments
+        optimizer\secondMoments: validated\restored\secondMoments
+    ]
+    return null
+]
+
+loadOptimizerState: function [optimizer state][
+    validated: lrValidateOptimizerState optimizer state
+    lrApplyValidatedOptimizerState validated
+    return optimizer
 ]
 
 lrCheckpointText: function [state][
+    return to :string lrModelCheckpointPayload state
+]
+
+lrModelCheckpointPayload: function [state][
     rows: lrFreshBlock
     loop state\parameters 'name [
         entry: state\values\[name]
@@ -109,13 +231,16 @@ lrCheckpointText: function [state][
             new buffer\data
         ]]
     ]
-    payload: @[10010 rows]
-    return to :string payload
+    return @[10010 rows]
 ]
 
 lrStateFromCheckpointText: function [text][
     unless string? text -> panic "learn: checkpoint content must be a string"
     payload: parse text
+    return lrStateFromCheckpointPayload payload
+]
+
+lrStateFromCheckpointPayload: function [payload][
     unless and? [block? payload][(size payload) = 2] -> panic "learn: malformed checkpoint payload"
     unless payload\0 = 10010 -> panic "learn: unsupported checkpoint header"
     rows: payload\1
@@ -138,6 +263,91 @@ lrStateFromCheckpointText: function [text][
         set valuesByName name #[shape: dims buffer: buffer]
     ]
     return #[format: "learn.state" version: "0.10" parameters: names values: valuesByName]
+]
+
+lrTensorStateRow: function [entry][
+    buffer: entry\buffer
+    return @[new entry\shape buffer\device buffer\dtype new buffer\data]
+]
+
+lrTensorStateRows: function [entries][
+    rows: lrFreshBlock
+    loop entries 'entry -> 'rows ++ @[lrTensorStateRow entry]
+    return rows
+]
+
+lrOptimizerCheckpointPayload: function [state][
+    hyper: state\hyperparameters
+    if state\kind = 'sgd -> return @['sgd hyper\rate]
+    if state\kind = 'momentum -> return @[
+        'momentum hyper\rate hyper\beta
+        lrTensorStateRows state\slots\velocities
+    ]
+    return @[
+        'adam hyper\rate hyper\beta1 hyper\beta2 hyper\epsilon hyper\timestep
+        lrTensorStateRows state\slots\firstMoments
+        lrTensorStateRows state\slots\secondMoments
+    ]
+]
+
+lrTensorStateFromRow: function [row][
+    unless and? [block? row][(size row) = 4] -> panic "learn: malformed optimizer tensor row"
+    shapeValue: row\0
+    device: to :literal to :string row\1
+    dtype: to :literal to :string row\2
+    data: row\3
+    unless and? [block? shapeValue][block? data] -> panic "learn: malformed optimizer tensor payload"
+    buffer: #[format: "learn.buffer" version: "0.9" device: device dtype: dtype count: size data data: data]
+    return #[shape: shapeValue buffer: buffer]
+]
+
+lrTensorStatesFromRows: function [rows][
+    unless block? rows -> panic "learn: optimizer tensor rows must be a block"
+    result: lrFreshBlock
+    loop rows 'row -> 'result ++ @[lrTensorStateFromRow row]
+    return result
+]
+
+lrOptimizerStateFromCheckpointPayload: function [payload parameterCount][
+    unless and? [block? payload][not? empty? payload] -> panic "learn: malformed optimizer checkpoint payload"
+    kind: to :literal to :string payload\0
+    if kind = 'sgd [
+        unless (size payload) = 2 -> panic "learn: malformed SGD checkpoint payload"
+        return #[format: "learn.optimizer-state" version: "0.12" kind: kind parameterCount: parameterCount hyperparameters: #[rate: payload\1] slots: lrFreshDictionary]
+    ]
+    if kind = 'momentum [
+        unless (size payload) = 4 -> panic "learn: malformed Momentum checkpoint payload"
+        velocities: lrTensorStatesFromRows payload\3
+        return #[format: "learn.optimizer-state" version: "0.12" kind: kind parameterCount: parameterCount hyperparameters: #[rate: payload\1 beta: payload\2] slots: #[velocities: velocities]]
+    ]
+    if kind = 'adam [
+        unless (size payload) = 8 -> panic "learn: malformed Adam checkpoint payload"
+        firstMoments: lrTensorStatesFromRows payload\6
+        secondMoments: lrTensorStatesFromRows payload\7
+        return #[format: "learn.optimizer-state" version: "0.12" kind: kind parameterCount: parameterCount hyperparameters: #[rate: payload\1 beta1: payload\2 beta2: payload\3 epsilon: payload\4 timestep: payload\5] slots: #[firstMoments: firstMoments secondMoments: secondMoments]]
+    ]
+    panic ~"learn: unsupported optimizer checkpoint kind |kind|"
+]
+
+saveTrainingCheckpoint: function [model optimizer path][
+    modelPayload: lrModelCheckpointPayload stateDict model
+    optimizerPayload: lrOptimizerCheckpointPayload optimizerState optimizer
+    payload: @[10012 modelPayload optimizerPayload]
+    write (to :string payload) path
+    return path
+]
+
+loadTrainingCheckpoint: function [model optimizer path][
+    payload: parse read path
+    unless and? [block? payload][(size payload) = 3] -> panic "learn: malformed training checkpoint payload"
+    unless payload\0 = 10012 -> panic "learn: unsupported training checkpoint header"
+    modelState: lrStateFromCheckpointPayload payload\1
+    optimizerStateValue: lrOptimizerStateFromCheckpointPayload payload\2 (size optimizer\parameterList)
+    validatedModel: lrValidateState model modelState true
+    validatedOptimizer: lrValidateOptimizerState optimizer optimizerStateValue
+    lrApplyValidatedState validatedModel
+    lrApplyValidatedOptimizerState validatedOptimizer
+    return model
 ]
 
 saveCheckpoint: function [model path][

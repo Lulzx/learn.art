@@ -11,7 +11,8 @@
 - v0.9: explicit CPU placement, differentiable transfers, and a versioned tensor-buffer contract.
 - v0.10: named model state, atomic strict restoration, and portable checkpoints.
 - v0.11: vector products and broadcasted batched matrix multiplication with gradients.
+- v0.12: optimizer state and atomic model-plus-optimizer training checkpoints.
 
 ## Next
 
-The next coherent milestone is resumable training state: optimizer hyperparameters, momentum and Adam moments, timestep restoration, and combined model-plus-optimizer checkpoints.
+The next coherent milestone is deterministic mini-batch training: seeded shuffling, batch iteration, epoch state, and resumable training sessions layered over graphs and optimizer checkpoints.

@@ -77,4 +77,75 @@ suite "model state and checkpoints" [
         malformedRejected?: throws? [lrStateFromCheckpointText "[999 []]"]
         assert -> malformedRejected?
     ]
+
+    test "captures and restores optimizer hyperparameters and slots" [
+        p: parameter 1.0
+        optimizer: momentum.rate: 0.1.beta: 0.8 @[p]
+        p\gradient: tensor 2.0
+        step optimizer
+        state: optimizerState optimizer
+
+        optimizer\rate: 0.5
+        optimizer\beta: 0.1
+        optimizer\velocities\0\data: [9.0]
+        loadOptimizerState optimizer state
+
+        assert -> 'momentum = state\kind
+        assert -> 0.1 = optimizer\rate
+        assert -> 0.8 = optimizer\beta
+        assert -> [2.0] = optimizer\velocities\0\data
+    ]
+
+    test "restores Adam moments and timestep" [
+        p: parameter 1.0
+        optimizer: adam.rate: 0.01 @[p]
+        p\gradient: tensor 2.0
+        step optimizer
+        state: optimizerState optimizer
+        firstBefore: state\slots\firstMoments\0\buffer\data\0
+        secondBefore: state\slots\secondMoments\0\buffer\data\0
+
+        optimizer\timestep: 9
+        optimizer\firstMoments\0\data: [7.0]
+        optimizer\secondMoments\0\data: [8.0]
+        loadOptimizerState optimizer state
+
+        assert -> 1 = optimizer\timestep
+        assert -> firstBefore = optimizer\firstMoments\0\data\0
+        assert -> secondBefore = optimizer\secondMoments\0\data\0
+    ]
+
+    test "round-trips combined resumable training checkpoints" [
+        model: graph [p: parameter 1.0]
+        optimizer: adam.rate: 0.01 (parameters model)
+        model\p\gradient: tensor 2.0
+        step optimizer
+        expectedParameter: model\p\value\data\0
+        expectedFirst: optimizer\firstMoments\0\data\0
+        expectedSecond: optimizer\secondMoments\0\data\0
+        expectedStep: optimizer\timestep
+
+        path: ".learn-checkpoint-test.state"
+        saveTrainingCheckpoint model optimizer path
+        model\p\gradient: tensor 4.0
+        step optimizer
+        loadTrainingCheckpoint model optimizer path
+
+        assert -> expectedParameter = model\p\value\data\0
+        assert -> expectedFirst = optimizer\firstMoments\0\data\0
+        assert -> expectedSecond = optimizer\secondMoments\0\data\0
+        assert -> expectedStep = optimizer\timestep
+    ]
+
+    test "rejects optimizer state before changing live slots" [
+        p: parameter 1.0
+        optimizer: momentum @[p]
+        beforeVelocity: optimizer\velocities\0\data\0
+        state: optimizerState optimizer
+        state\slots\velocities\0\shape: [2]
+        state\slots\velocities\0\buffer: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: 'float64 count: 2 data: [1.0 2.0]]
+        rejected?: throws? [loadOptimizerState optimizer state]
+        assert -> rejected?
+        assert -> beforeVelocity = optimizer\velocities\0\data\0
+    ]
 ]

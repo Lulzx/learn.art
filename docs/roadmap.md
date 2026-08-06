@@ -15,7 +15,8 @@
 - v0.13: deterministic paired mini-batches and fully resumable training-session checkpoints.
 - v0.14: resumable high-level training with named feeds, validation, history, and callback stopping.
 - v0.15: global gradient clipping and checkpointable epoch learning-rate schedules.
+- v0.16: fitted standardization, reversible transform pipelines, and portable preprocessing state.
 
 ## Next
 
-The next coherent milestone is reusable preprocessing: fitted normalization, deterministic transform pipelines, and portable transform state for train/predict parity.
+The next coherent milestone is multiclass learning: stable softmax and cross-entropy operations, class prediction, and multiclass accuracy.

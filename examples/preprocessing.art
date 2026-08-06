@@ -1,0 +1,15 @@
+import relative {../src/learn}!
+
+xTrain: tensor [[1.0 10.0] [3.0 20.0] [5.0 30.0]]
+xTest: tensor [[2.0 15.0] [4.0 25.0]]
+
+scaler: standardScaler xTrain
+scaledTrain: applyTransform scaler xTrain
+scaledTest: applyTransform scaler xTest
+restoredTest: inverseTransform scaler scaledTest
+
+print ~"mean: |scaler\mean|"
+print ~"scale: |scaler\scale|"
+print ~"scaled train: |scaledTrain|"
+print ~"scaled test: |scaledTest|"
+print ~"restored test: |restoredTest|"

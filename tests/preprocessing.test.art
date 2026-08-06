@@ -1,0 +1,87 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "fitted preprocessing" [
+    test "fits feature-wise standardization and preserves shape" [
+        values: tensor [[1.0 2.0] [3.0 4.0] [5.0 6.0]]
+        scaler: standardScaler values
+        normalized: applyTransform scaler values
+        assert -> [2] = scaler\featureShape
+        assert -> 3.0 = scaler\mean\0
+        assert -> 4.0 = scaler\mean\1
+        assert -> values\shape = normalized\shape
+        assert -> (abs normalized\data\0 + 1.224744871391589) < 0.000000001
+        assert -> 0.0 = normalized\data\2
+    ]
+
+    test "uses unit scale for constant features" [
+        values: tensor [[2.0 7.0] [2.0 9.0]]
+        scaler: standardScaler values
+        normalized: applyTransform scaler values
+        assert -> 1.0 = scaler\scale\0
+        assert -> 0.0 = normalized\data\0
+        assert -> 0.0 = normalized\data\2
+    ]
+
+    test "inverse transform reconstructs inputs" [
+        values: tensor [1.0 3.0 5.0]
+        scaler: standardScaler values
+        normalized: applyTransform scaler values
+        restored: inverseTransform scaler normalized
+        assert -> values\shape = restored\shape
+        loop 0..2 'itemIndex -> assert -> (abs values\data\[itemIndex] - restored\data\[itemIndex]) < 0.000000001
+    ]
+
+    test "composes fitted transforms in order" [
+        values: tensor [[1.0] [2.0] [5.0]]
+        firstScaler: standardScaler values
+        firstOutput: applyTransform firstScaler values
+        secondScaler: standardScaler firstOutput
+        pipeline: transformPipeline @[firstScaler secondScaler]
+        transformed: applyTransform pipeline values
+        restored: inverseTransform pipeline transformed
+        loop 0..2 'itemIndex [
+            assert -> (abs firstOutput\data\[itemIndex] - transformed\data\[itemIndex]) < 0.000000001
+            assert -> (abs values\data\[itemIndex] - restored\data\[itemIndex]) < 0.000000001
+        ]
+    ]
+
+    test "exports owned state and reconstructs a preprocessor" [
+        values: tensor [[1.0 2.0] [3.0 6.0]]
+        scaler: standardScaler values
+        state: preprocessorState scaler
+        reconstructed: preprocessorFromState state
+        expected: applyTransform scaler values
+        actual: applyTransform reconstructed values
+        set state\mean 0 99.0
+        unchanged: applyTransform scaler values
+        assert -> "learn.preprocessor-state" = state\format
+        assert -> expected\data = actual\data
+        assert -> expected\data = unchanged\data
+    ]
+
+    test "round-trips portable pipeline state" [
+        values: tensor [[1.0] [3.0] [8.0]]
+        scaler: standardScaler values
+        pipeline: transformPipeline @[scaler]
+        path: ".learn-preprocessor-test.state"
+        savePreprocessor pipeline path
+        loaded: loadPreprocessor path
+        expected: applyTransform pipeline values
+        actual: applyTransform loaded values
+        assert -> expected\shape = actual\shape
+        assert -> expected\data = actual\data
+    ]
+
+    test "rejects incompatible inputs and malformed state" [
+        fitted: standardScaler tensor [[1.0 2.0] [3.0 4.0]]
+        incompatible?: throws? [applyTransform fitted tensor [[1.0 2.0 3.0]]]
+        state: preprocessorState fitted
+        state\scale: [1.0 0.0]
+        malformed?: throws? [preprocessorFromState state]
+        emptyFit?: throws? [standardScaler tensor []]
+        assert -> incompatible?
+        assert -> malformed?
+        assert -> emptyFit?
+    ]
+]

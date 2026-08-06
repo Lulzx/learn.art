@@ -3,6 +3,7 @@
 .learn-native-test/
 .learn-checkpoint-test.state
 .learn-scheduler-checkpoint-test.state
+.learn-preprocessor-test.state
 native/*.dylib
 native/*.so
 native/*.dll

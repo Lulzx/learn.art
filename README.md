@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.15 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable high-level training, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.16 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -72,6 +72,12 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 
 `fit.mlp.hidden: 4 features targets` builds a dense one-hidden-layer regression graph. `relu`, `tensorTanh`, `dense`, `momentum`, and `adam` are also public building blocks.
 
+## Preprocessing
+
+`standardScaler trainingFeatures` fits feature-wise means and population standard deviations across the leading row axis. `applyTransform scaler values` applies the frozen statistics without mutation, and `inverseTransform` reconstructs the original scale. Rank-1 inputs are treated as one feature; higher-rank inputs preserve their complete trailing feature shape.
+
+`transformPipeline @[firstStep secondStep]` composes fitted preprocessors in order and reverses them in reverse order. `preprocessorState` and `preprocessorFromState` provide owned ordinary-data state, while `savePreprocessor` and `loadPreprocessor` use a portable, non-executable v0.16 checkpoint payload.
+
 ## Graph transformations
 
 `validateGraphData`, `deadCodeEliminate`, `commonSubexpressions`, and `optimizeGraph` analyze or rewrite the plain dictionary returned by `graphData`. `graphDot` exports the same representation for Graphviz visualization. These passes preserve the live eager graph and make lazy execution work explicit at the data boundary.
@@ -90,6 +96,7 @@ arturo -p install unitt
 arturo examples/linear.art
 arturo examples/regression.art
 arturo examples/training-loop.art
+arturo examples/preprocessing.art
 arturo examples/native-cpu.art
 ```
 

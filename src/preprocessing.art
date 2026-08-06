@@ -1,0 +1,228 @@
+; Fitted, deterministic preprocessing with portable state.
+
+import relative {./tensor}!
+
+define :learnStandardScaler [
+    init: constructor [featureShape mean scale device]
+]
+
+define :learnTransformPipeline [
+    init: constructor [steps]
+]
+
+lrPreprocessorFeatureShape: function [source][
+    unless is? :learnTensor source -> panic "learn: preprocessing expects a tensor"
+    if empty? source\shape -> panic "learn: preprocessing expects a row dimension"
+    trailing: lrFreshBlock
+    if (size source\shape) > 1 [loop 1..((size source\shape) - 1) 'axis -> 'trailing ++ source\shape\[axis]]
+    return trailing
+]
+
+lrPreprocessorWidth: function [featureShape][
+    width: lrCount featureShape
+    unless width > 0 -> panic "learn: preprocessing requires at least one feature value per row"
+    return width
+]
+
+standardScaler: function [values][
+    source: lrAsTensor values
+    featureShape: lrPreprocessorFeatureShape source
+    width: lrPreprocessorWidth featureShape
+    rows: source\shape\0
+    unless rows > 0 -> panic "learn: cannot fit preprocessing on an empty dataset"
+    means: lrArgs width
+    scales: lrArgs width
+    loop 0..(width - 1) 'featureIndex [
+        total: 0.0
+        loop 0..(rows - 1) 'rowIndex -> total: total + source\data\[(rowIndex * width) + featureIndex]
+        average: total / rows
+        set means featureIndex average
+        squared: 0.0
+        loop 0..(rows - 1) 'rowIndex [
+            difference: source\data\[(rowIndex * width) + featureIndex] - average
+            squared: squared + (difference * difference)
+        ]
+        deviation: (squared / rows) ^ 0.5
+        if deviation = 0.0 -> deviation: 1.0
+        set scales featureIndex deviation
+    ]
+    args: lrArgs 4
+    set args 0 featureShape
+    set args 1 means
+    set args 2 scales
+    set args 3 source\device
+    return to :learnStandardScaler args
+]
+
+transformPipeline: function [steps][
+    unless and? [block? steps][not? empty? steps] -> panic "learn: transformPipeline expects fitted preprocessing steps"
+    owned: lrFreshBlock
+    loop steps 'item [
+        unless or? [is? :learnStandardScaler item][is? :learnTransformPipeline item] -> panic "learn: transformPipeline contains an unsupported step"
+        'owned ++ @[item]
+    ]
+    args: lrArgs 1
+    set args 0 owned
+    return to :learnTransformPipeline args
+]
+
+lrValidatePreprocessorInput: function [scaler source][
+    featureShape: lrPreprocessorFeatureShape source
+    unless featureShape = scaler\featureShape -> panic "learn: preprocessing feature shape does not match fitted state"
+    unless source\device = scaler\device -> panic "learn: preprocessing device does not match fitted state"
+    return lrPreprocessorWidth featureShape
+]
+
+applyTransform: function [preprocessor values][
+    source: lrAsTensor values
+    if is? :learnTransformPipeline preprocessor [
+        result: source
+        loop preprocessor\steps 'item -> result: applyTransform item result
+        return result
+    ]
+    unless is? :learnStandardScaler preprocessor -> panic "learn: applyTransform expects a fitted preprocessor"
+    width: lrValidatePreprocessorInput preprocessor source
+    output: lrFreshBlock
+    dataCount: size source\data
+    if dataCount > 0 [loop 0..(dataCount - 1) 'dataIndex [
+        featureIndex: dataIndex % width
+        centered: source\data\[dataIndex] - preprocessor\mean\[featureIndex]
+        'output ++ centered / preprocessor\scale\[featureIndex]
+    ]]
+    return lrMakeTensorOn source\shape output source\device
+]
+
+inverseTransform: function [preprocessor values][
+    source: lrAsTensor values
+    if is? :learnTransformPipeline preprocessor [
+        result: source
+        loop reverse preprocessor\steps 'item -> result: inverseTransform item result
+        return result
+    ]
+    unless is? :learnStandardScaler preprocessor -> panic "learn: inverseTransform expects a fitted preprocessor"
+    width: lrValidatePreprocessorInput preprocessor source
+    output: lrFreshBlock
+    dataCount: size source\data
+    if dataCount > 0 [loop 0..(dataCount - 1) 'dataIndex [
+        featureIndex: dataIndex % width
+        restored: source\data\[dataIndex] * preprocessor\scale\[featureIndex]
+        'output ++ restored + preprocessor\mean\[featureIndex]
+    ]]
+    return lrMakeTensorOn source\shape output source\device
+]
+
+preprocessorState: function [preprocessor][
+    if is? :learnStandardScaler preprocessor -> return #[
+        format: "learn.preprocessor-state" version: "0.16" kind: 'standard
+        featureShape: new preprocessor\featureShape
+        mean: new preprocessor\mean
+        scale: new preprocessor\scale
+        device: preprocessor\device
+    ]
+    if is? :learnTransformPipeline preprocessor [
+        stepStates: lrFreshBlock
+        loop preprocessor\steps 'item [
+            itemState: preprocessorState item
+            'stepStates ++ @[itemState]
+        ]
+        return #[format: "learn.preprocessor-state" version: "0.16" kind: 'pipeline steps: stepStates]
+    ]
+    panic "learn: preprocessorState expects a fitted preprocessor"
+]
+
+lrStandardScalerFromState: function [state][
+    loop ['featureShape 'mean 'scale 'device] 'field [unless key? state field -> panic ~"learn: preprocessor state is missing |field|"]
+    unless block? state\featureShape -> panic "learn: preprocessor feature shape is invalid"
+    lrValidateShape state\featureShape
+    width: lrPreprocessorWidth state\featureShape
+    unless and? [block? state\mean][(size state\mean) = width] -> panic "learn: preprocessor mean is invalid"
+    unless and? [block? state\scale][(size state\scale) = width] -> panic "learn: preprocessor scale is invalid"
+    means: lrFreshBlock
+    scales: lrFreshBlock
+    loop state\mean 'item [unless lrNumeric? item -> panic "learn: preprocessor mean must be numeric" 'means ++ lrFloat item]
+    loop state\scale 'item [
+        unless and? [lrNumeric? item][item > 0.0] -> panic "learn: preprocessor scale must be positive"
+        'scales ++ lrFloat item
+    ]
+    device: lrNormalizeDevice state\device
+    args: lrArgs 4
+    set args 0 new state\featureShape
+    set args 1 means
+    set args 2 scales
+    set args 3 device
+    return to :learnStandardScaler args
+]
+
+preprocessorFromState: function [state][
+    unless dictionary? state -> panic "learn: preprocessor state must be a dictionary"
+    unless and? [key? state 'format][state\format = "learn.preprocessor-state"] -> panic "learn: unsupported preprocessor state format"
+    unless and? [key? state 'version][state\version = "0.16"] -> panic "learn: unsupported preprocessor state version"
+    unless key? state 'kind -> panic "learn: preprocessor state is missing kind"
+    if state\kind = 'standard -> return lrStandardScalerFromState state
+    if state\kind = 'pipeline [
+        unless and? [key? state 'steps][and? [block? state\steps][not? empty? state\steps]] -> panic "learn: preprocessor pipeline state is invalid"
+        steps: lrFreshBlock
+        loop state\steps 'item [
+            restoredStep: preprocessorFromState item
+            'steps ++ @[restoredStep]
+        ]
+        return transformPipeline steps
+    ]
+    panic ~"learn: unsupported preprocessor kind |state\kind|"
+]
+
+lrPreprocessorCheckpointPayload: function [preprocessor][
+    if is? :learnStandardScaler preprocessor -> return @[
+        'standard
+        new preprocessor\featureShape
+        new preprocessor\mean
+        new preprocessor\scale
+        preprocessor\device
+    ]
+    if is? :learnTransformPipeline preprocessor [
+        stepPayloads: lrFreshBlock
+        loop preprocessor\steps 'item [
+            itemPayload: lrPreprocessorCheckpointPayload item
+            'stepPayloads ++ @[itemPayload]
+        ]
+        return @['pipeline stepPayloads]
+    ]
+    panic "learn: cannot checkpoint an unsupported preprocessor"
+]
+
+lrPreprocessorStateFromPayload: function [payload][
+    unless and? [block? payload][not? empty? payload] -> panic "learn: malformed preprocessor payload"
+    kind: to :literal to :string payload\0
+    if kind = 'standard [
+        unless (size payload) = 5 -> panic "learn: malformed standard-scaler payload"
+        return #[
+            format: "learn.preprocessor-state" version: "0.16" kind: 'standard
+            featureShape: payload\1 mean: payload\2 scale: payload\3 device: to :literal to :string payload\4
+        ]
+    ]
+    if kind = 'pipeline [
+        unless and? [(size payload) = 2][and? [block? payload\1][not? empty? payload\1]] -> panic "learn: malformed preprocessing-pipeline payload"
+        stepStates: lrFreshBlock
+        loop payload\1 'item [
+            itemState: lrPreprocessorStateFromPayload item
+            'stepStates ++ @[itemState]
+        ]
+        return #[format: "learn.preprocessor-state" version: "0.16" kind: 'pipeline steps: stepStates]
+    ]
+    panic ~"learn: unsupported preprocessor payload kind |kind|"
+]
+
+savePreprocessor: function [preprocessor path][
+    checkpointPayload: lrPreprocessorCheckpointPayload preprocessor
+    payload: @[10016 checkpointPayload]
+    write (to :string payload) path
+    return path
+]
+
+loadPreprocessor: function [path][
+    payload: parse read path
+    unless and? [block? payload][(size payload) = 2] -> panic "learn: malformed preprocessor checkpoint payload"
+    unless payload\0 = 10016 -> panic "learn: unsupported preprocessor checkpoint header"
+    state: lrPreprocessorStateFromPayload payload\1
+    return preprocessorFromState state
+]

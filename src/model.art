@@ -27,7 +27,7 @@ input: function [][
         value: tensor 0.0
         requiresGradient: false
         operation: 'input
-        parents: []
+        parents: lrFreshBlock
         parameter: false
     ]
 ]
@@ -45,7 +45,7 @@ parameter: function [dims][
     ]
 
     lrValidateShape dims
-    data: []
+    data: lrFreshBlock
     count: lrCount dims
     if count > 0 [
         loop 1..count 'unused [
@@ -61,7 +61,7 @@ parameter: function [dims][
 ]
 
 lrGraphNames: function [body][
-    result: []
+    result: lrFreshBlock
     loop body 'token [
         if label? token -> 'result ++ @[to :literal to :string token]
     ]
@@ -77,9 +77,9 @@ graph: function [body][
     ; through `symbols`, while references to the caller's tensors remain valid.
     do body
     scope: symbols
-    graphValues: #[]
-    parameterList: []
-    inputList: []
+    graphValues: lrFreshDictionary
+    parameterList: lrFreshBlock
+    inputList: lrFreshBlock
 
     loop names 'name [
         unless key? scope name -> panic ~"learn: graph could not evaluate |name|"
@@ -91,14 +91,19 @@ graph: function [body][
         if and? [is? :learnValue item][item\operation = 'input] -> 'inputList ++ @[name]
     ]
 
-    args: [null null null null null null]
+    args: lrArgs 6
     set args 0 graphValues
     set args 1 names
     set args 2 parameterList
     set args 3 inputList
     set args 4 new body
-    set args 5 #[]
-    return to :learnGraph args
+    graphFeeds: lrFreshDictionary
+    set args 5 graphFeeds
+    resultGraph: to :learnGraph args
+    ; Arturo object construction aliases empty dictionary fields across
+    ; instances, so install the per-graph feed store explicitly.
+    set resultGraph 'feeds graphFeeds
+    return resultGraph
 ]
 
 inputs: function [model][
@@ -123,10 +128,11 @@ forward: function [model][
                 panic ~"learn: graph has no input named |name|"
         ]
         loop model\inputList 'name [
-            unless key? feed name -> panic ~"learn: missing graph input |name|"
+            if key? feed name [
             node: model\values\[name]
             node\value: lrAsTensor feed\[name]
             set model\feeds name true
+            ]
         ]
     ]
 
@@ -143,7 +149,7 @@ forward: function [model][
 
 operations: function [model][
     unless is? :learnGraph model -> panic "learn: operations expects a graph"
-    result: []
+    result: lrFreshBlock
     loop model\names 'name [
         item: model\values\[name]
         if is? :learnValue item [
@@ -176,7 +182,7 @@ lrGraphNodeData: function [model name][
     if item\operation = 'input -> role: 'input
     if item\parameter -> role: 'parameter
 
-    parentData: []
+    parentData: lrFreshBlock
     loop item\parents 'parent [
         parentName: lrGraphNameOf model parent
         if null? parentName -> 'parentData ++ @[#[role: 'constant value: lrTensorData parent\value]]
@@ -194,8 +200,8 @@ lrGraphNodeData: function [model name][
 
 graphData: function [model][
     unless is? :learnGraph model -> panic "learn: graphData expects a graph"
-    nodes: #[]
-    parameterNames: []
+    nodes: lrFreshDictionary
+    parameterNames: lrFreshBlock
     loop model\names 'name [
         nodeData: lrGraphNodeData model name
         set nodes name nodeData
@@ -233,7 +239,7 @@ sgd: function [parameterList][
             panic "learn: SGD expects parameter values"
     ]
 
-    args: [null null]
+    args: lrArgs 2
     set args 0 parameterList
     set args 1 to :floating rate
     return to :learnSgd args

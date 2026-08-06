@@ -1,0 +1,57 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "regression layer" [
+    test "differentiates sigmoid and binary cross entropy" [
+        logits: variable tensor [0.0 1.0]
+        probabilities: sigmoid logits
+        targets: tensor [0.0 1.0]
+        loss: binaryCrossEntropy probabilities targets
+        backward loss
+        grad: gradient logits
+        finite?: and? [grad\data\0 > 0.0][grad\data\1 < 0.0]
+        probabilityShape: shape probabilities
+        lossValue: loss\value\data\0
+        assert -> [2] = probabilityShape
+        assert -> finite?
+        assert -> lossValue > 0.0
+    ]
+
+    test "fits and predicts linear regression" [
+        x: tensor [0.0 1.0 2.0 3.0]
+        y: tensor [1.0 3.0 5.0 7.0]
+        estimator: fit.linear x y
+        prediction: predict estimator x
+        quality: score estimator x y
+        error: mse y prediction
+        assert -> quality > 0.99
+        assert -> error < 0.01
+    ]
+
+    test "fits logistic regression and returns probabilities on request" [
+        x: tensor [0.0 1.0 2.0 3.0]
+        y: tensor [0.0 0.0 1.0 1.0]
+        estimator: fit.logistic.epochs: 800.rate: 0.1 x y
+        classes: predict estimator x
+        probabilities: predict.probability estimator x
+        quality: score estimator x y
+        classData: classes\data
+        firstProbability: probabilities\data\0
+        lastProbability: probabilities\data\3
+        assert -> [0.0 0.0 1.0 1.0] = classData
+        assert -> quality > 0.99
+        assert -> firstProbability < lastProbability
+    ]
+
+    test "splits paired tensors by row" [
+        x: tensor [[1 2] [3 4] [5 6] [7 8] [9 10]]
+        y: tensor [1 2 3 4 5]
+        parts: split.ratio: 0.6 x y
+        xTrainShape: shape parts\xTrain
+        xTestShape: shape parts\xTest
+        yTrainShape: shape parts\yTrain
+        assert -> [3 2] = xTrainShape
+        assert -> [2 2] = xTestShape
+        assert -> [3] = yTrainShape
+    ]
+]

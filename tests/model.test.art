@@ -32,10 +32,11 @@ suite "graphs and optimization" [
             total: x + y
             loss: mean total
         ]
-        missing?: throws? [forward.with: #[x: 1.0] model]
-        unknown?: throws? [forward.with: #[x: 1.0 y: 2.0 z: 3.0] model]
-        assert -> missing?
-        assert -> unknown?
+        firstFeed: #[x: 1.0]
+        missingFeedRejected: throws? [forward.with: firstFeed model]
+        unknownFeedRejected: throws? [forward.with: #[x: 1.0 y: 2.0 z: 3.0] model]
+        assert -> missingFeedRejected
+        assert -> unknownFeedRejected
     ]
 
     test "discovers parameters in declaration order" [

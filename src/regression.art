@@ -1,0 +1,192 @@
+; High-level linear and logistic regression built entirely from graphs.
+
+import relative {./model}!
+
+define :learnSplit [
+    init: constructor [xTrain xTest yTrain yTest]
+]
+
+lrVectorData: function [value label][
+    source: lrAsTensor value
+    rank: size source\shape
+    if rank = 1 -> return source
+    if and? [rank = 2][source\shape\1 = 1] ->
+        return reshape source @[source\shape\0]
+    panic ~"learn: |label| must be a vector or a one-column matrix"
+]
+
+lrInputFrom: function [value][
+    return lrMakeValue #[
+        value: lrAsTensor value
+        requiresGradient: false
+        operation: 'input
+        parents: lrFreshBlock
+        parameter: false
+    ]
+]
+
+lrTrainBatch: function [model optimizer feed count][
+    loop 1..count 'batchEpoch [
+        zeroGrad model
+        forward.with: feed model
+        backward model\loss
+        step optimizer
+    ]
+    return null
+]
+
+fit: function [features targets][
+    callAttrs: attrs
+    linearMode: key? callAttrs 'linear
+    logisticMode: key? callAttrs 'logistic
+    unless or? [linearMode][logisticMode] ->
+        panic "learn: fit requires .linear or .logistic"
+
+    epochs: 200
+    rate: 0.05
+    if key? callAttrs 'epochs -> epochs: callAttrs\epochs
+    if key? callAttrs 'rate -> rate: callAttrs\rate
+    unless and? [integer? epochs][epochs > 0] -> panic "learn: epochs must be a positive integer"
+
+    xTrain: lrVectorData features "features"
+    yTrain: lrVectorData targets "targets"
+    unless xTrain\shape = yTrain\shape -> panic "learn: features and targets must have equal length"
+
+    xNode: lrInputFrom xTrain
+    yNode: lrInputFrom yTrain
+    model: null
+    kind: 'linear
+
+    if linearMode [
+        model: graph [
+            x: xNode
+            y: yNode
+            w: parameter 0.0
+            b: parameter 0.0
+            linear: x * w
+            prediction: linear + b
+            residual: prediction - y
+            squared: square residual
+            loss: mean squared
+        ]
+    ]
+
+    if logisticMode [
+        kind: 'logistic
+        model: graph [
+            x: xNode
+            y: yNode
+            w: parameter 0.0
+            b: parameter 0.0
+            linear: x * w
+            logits: linear + b
+            prediction: sigmoid logits
+            loss: binaryCrossEntropy prediction y
+        ]
+    ]
+
+    optimizer: sgd.rate: rate (parameters model)
+    feed: #[x: xTrain y: yTrain]
+    fittedEstimator: #[estimator: true kind: kind model: model]
+    remainingEpochs: epochs
+    if and? [logisticMode][remainingEpochs > 200] -> remainingEpochs: 200
+    while [remainingEpochs > 0][
+        batchCount: 200
+        if remainingEpochs < batchCount -> batchCount: remainingEpochs
+        lrTrainBatch model optimizer feed batchCount
+        remainingEpochs: remainingEpochs - batchCount
+    ]
+
+    return fittedEstimator
+]
+
+predict: function [estimator features][
+    callAttrs: attrs
+    unless and? [dictionary? estimator][key? estimator 'estimator] -> panic "learn: predict expects a fitted estimator"
+    x: lrVectorData features "features"
+    feed: lrFreshDictionary
+    set feed 'x x
+    forward.with: feed estimator\model
+    result: detach estimator\model\prediction
+
+    if and? [estimator\kind = 'logistic][not? key? callAttrs 'probability] [
+        classes: map result\data 'item -> (item >= 0.5)? -> 1.0 -> 0.0
+        return lrMakeTensor result\shape classes
+    ]
+    return result
+]
+
+mse: function [actual predicted][
+    a: lrVectorData actual "actual values"
+    p: lrVectorData predicted "predicted values"
+    difference: lrTensorBinary p a 'sub
+    squared: lrTensorBinary difference 2.0 'pow
+    meanSquared: mean squared
+    return meanSquared\data\0
+]
+
+accuracy: function [actual predicted][
+    a: lrVectorData actual "actual values"
+    p: lrVectorData predicted "predicted values"
+    unless a\shape = p\shape -> panic "learn: accuracy values must have equal length"
+    if empty? a\data -> panic "learn: accuracy is undefined for empty values"
+    correct: 0
+    loop 0..((size a\data) - 1) 'i [
+        if a\data\[i] = p\data\[i] -> correct: correct + 1
+    ]
+    return (to :floating correct) / size a\data
+]
+
+score: function [estimator features targets][
+    unless and? [dictionary? estimator][key? estimator 'estimator] -> panic "learn: score expects a fitted estimator"
+    scorePrediction: predict estimator features
+    if estimator\kind = 'logistic -> return accuracy targets scorePrediction
+    actual: lrVectorData targets "targets"
+    fitError: mse actual scorePrediction
+    averageTensor: mean actual
+    averageValue: averageTensor\data\0
+    zeroVector: lrTensorBinary actual 0.0 'mul
+    baseline: lrTensorBinary zeroVector averageValue 'add
+    baselineError: mse actual baseline
+    if baselineError = 0.0 -> return (fitError = 0.0)? -> 1.0 -> 0.0
+    ratioValue: fitError / baselineError
+    return 1.0 - ratioValue
+]
+
+lrTensorRows: function [source start count][
+    tensorValue: lrAsTensor source
+    rank: size tensorValue\shape
+    unless contains? [1 2] rank -> panic "learn: split supports vectors and matrices"
+    width: (rank = 1)? -> 1 -> tensorValue\shape\1
+    data: lrFreshBlock
+    if count > 0 [
+        firstIndex: start * width
+        lastIndex: firstIndex + (count * width) - 1
+        loop firstIndex..lastIndex 'i -> 'data ++ tensorValue\data\[i]
+    ]
+    dims: (rank = 1)? -> @[count] -> @[count width]
+    return lrMakeTensor dims data
+]
+
+split: function [features targets][
+    callAttrs: attrs
+    ratio: 0.8
+    if key? callAttrs 'ratio -> ratio: callAttrs\ratio
+    unless and? [lrNumeric? ratio][and? [ratio > 0.0][ratio < 1.0]] ->
+        panic "learn: split ratio must be between zero and one"
+
+    x: lrAsTensor features
+    y: lrAsTensor targets
+    xRows: x\shape\0
+    yRows: y\shape\0
+    unless xRows = yRows -> panic "learn: split features and targets must have equal rows"
+    trainCount: to :integer floor (xRows * ratio)
+    testCount: xRows - trainCount
+
+    args: lrArgs 4
+    set args 0 lrTensorRows x 0 trainCount
+    set args 1 lrTensorRows x trainCount testCount
+    set args 2 lrTensorRows y 0 trainCount
+    set args 3 lrTensorRows y trainCount testCount
+    return to :learnSplit args
+]

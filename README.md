@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.2 combines a small tensor/autograd runtime with an input-driven graph dialect whose structure can be inspected, explained, serialized, and eventually transformed or compiled.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.3 combines a small tensor/autograd runtime with inspectable graphs and graph-built linear and logistic estimators.
 
 ## Example
 
@@ -55,6 +55,10 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 
 `sgd.rate: 0.05 (parameters model)` creates a stateful optimizer. `step` updates parameter tensor data while preserving graph identity.
 
+## Regression API
+
+`fit.linear features targets` and `fit.logistic features targets` build and train ordinary learn graphs. Use `predict`, `predict.probability`, `score`, `mse`, and `accuracy` to evaluate them. `split.ratio:` performs a deterministic paired row split. The first estimator layer accepts vectors or one-column matrices.
+
 ## Development
 
 The package requires Arturo 0.10.0 and uses [unitt](https://github.com/RickBarretto/unitt):
@@ -63,6 +67,7 @@ The package requires Arturo 0.10.0 and uses [unitt](https://github.com/RickBarre
 arturo -p install unitt
 ~/.arturo/packages/bin/unitt --no-color
 arturo examples/linear.art
+arturo examples/regression.art
 ```
 
 GPU execution, ranks above two, mixed dtypes, views, mutation APIs, and native backends remain outside the current milestone.

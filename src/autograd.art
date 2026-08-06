@@ -32,7 +32,7 @@ define :learnValue [
 ]
 
 lrMakeValue: function [spec][
-    args: [null null null null null null null]
+    args: lrArgs 7
     set args 0 lrValueId
     set args 1 lrAsTensor spec\value
     set args 2 null
@@ -45,11 +45,11 @@ lrMakeValue: function [spec][
 
 lrAsValue: function [value][
     if is? :learnValue value -> return value
-    return lrMakeValue #[value: lrAsTensor value requiresGradient: false operation: 'constant parents: [] parameter: false]
+    return lrMakeValue #[value: lrAsTensor value requiresGradient: false operation: 'constant parents: lrFreshBlock parameter: false]
 ]
 
 variable: function [value][
-    return lrMakeValue #[value: lrAsTensor value requiresGradient: true operation: 'leaf parents: [] parameter: false]
+    return lrMakeValue #[value: lrAsTensor value requiresGradient: true operation: 'leaf parents: lrFreshBlock parameter: false]
 ]
 
 detach: function [value][
@@ -114,7 +114,7 @@ lrOnesLike: function [value][
 
 lrUnbroadcast: function [value targetShape][
     if value\shape = targetShape -> return lrMakeTensor value\shape value\data
-    data: []
+    data: lrFreshBlock
     targetCount: lrCount targetShape
     if targetCount > 0 [loop 1..targetCount 'unused -> 'data ++ 0.0]
 
@@ -142,8 +142,8 @@ lrContainsIdentity?: function [items sought][
 ]
 
 lrTopo: function [node][
-    seen: []
-    result: []
+    seen: lrFreshBlock
+    result: lrFreshBlock
     pending: @[@[node false]]
 
     while [not? empty? pending][
@@ -173,6 +173,9 @@ lrForwardNode: function [node][
         minusOne: 0.0 - 1.0
         node\value: lrTensorBinary node\parents\0\value minusOne 'mul
     ]
+    if op = 'exp -> node\value: lrTensorUnary node\parents\0\value 'exp
+    if op = 'log -> node\value: lrTensorUnary node\parents\0\value 'log
+    if op = 'sigmoid -> node\value: lrTensorUnary node\parents\0\value 'sigmoid
     if op = 'add -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'add
     if op = 'sub -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'sub
     if op = 'mul -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'mul
@@ -196,8 +199,11 @@ forwardValue: function [value][
 zeroGrad: function [target][
     if is? :learnGraph target [
         graphItems: values target\values
-        loop graphItems 'node [
-            if is? :learnValue node -> node\gradient: null
+        loop graphItems 'graphNode [
+            if is? :learnValue graphNode [
+                graphTopo: lrTopo graphNode
+                loop graphTopo 'reachable -> reachable\gradient: null
+            ]
         ]
         return target
     ]
@@ -246,6 +252,22 @@ backward: function [output][
             minusOne: 0.0 - 1.0
             negativeUp: lrTensorBinary up minusOne 'mul
             lrAccumulate node\parents\0 negativeUp
+        ]
+        if op = 'exp [
+            local: lrTensorUnary node\parents\0\value 'exp
+            contribution: lrTensorBinary up local 'mul
+            lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'log [
+            contribution: lrTensorBinary up node\parents\0\value 'div
+            lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'sigmoid [
+            one: lrOnesLike node\value
+            complement: lrTensorBinary one node\value 'sub
+            local: lrTensorBinary node\value complement 'mul
+            contribution: lrTensorBinary up local 'mul
+            lrAccumulate node\parents\0 contribution
         ]
         if op = 'pow [
             exponent: node\parents\1\value

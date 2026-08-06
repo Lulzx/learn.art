@@ -1,0 +1,11 @@
+import relative {../src/learn}!
+
+do [
+    x: tensor [0.0 1.0 2.0 3.0]
+    y: tensor [1.0 3.0 5.0 7.0]
+    estimator: fit.linear x y
+    prediction: predict estimator x
+    quality: score estimator x y
+    print prediction
+    print quality
+]

@@ -1,5 +1,21 @@
 ; Dense, owned, row-major tensors of rank zero through two.
 
+lrFreshDictionary: function [][
+    ; Empty literals are reused by Arturo 0.10. A dynamically allocated block
+    ; prevents mutable state from leaking between calls.
+    return to :dictionary array 0
+]
+
+lrFreshBlock: function [][
+    return remove (array 0) 0
+]
+
+lrArgs: function [count][
+    result: lrFreshBlock
+    if count > 0 [loop 1..count 'unused -> 'result ++ null]
+    return result
+]
+
 define :learnTensor [
     init: constructor [shape strides data]
 
@@ -58,7 +74,7 @@ lrMakeTensor: function [dims data][
         panic ~"learn: shape |dims| requires |lrCount dims| values, got |size data|"
 
     floats: map data 'item -> lrFloat item
-    args: [null null null]
+    args: lrArgs 3
     set args 0 new dims
     set args 1 lrStrides dims
     set args 2 floats
@@ -74,7 +90,7 @@ lrTensorFromData: function [source][
     firstItem: first source
     if block? firstItem [
         cols: size firstItem
-        flat: []
+        flat: lrFreshBlock
         loop source 'row [
             unless block? row -> panic "learn: matrix rows must all be blocks"
             unless (size row) = cols -> panic "learn: matrix rows must have equal length"
@@ -86,7 +102,7 @@ lrTensorFromData: function [source][
         return lrMakeTensor @[(size source) cols] flat
     ]
 
-    flat: []
+    flat: lrFreshBlock
     loop source 'item [
         if block? item -> panic "learn: vector values cannot mix numbers and blocks"
         'flat ++ lrFloat item
@@ -103,7 +119,7 @@ tensor: function [source][
 
     if makeFilled [
         dims: lrValidateShape source
-        data: []
+        data: lrFreshBlock
         count: lrCount dims
         if count > 0 [
             loop 1..count 'unused [
@@ -182,7 +198,7 @@ lrTensorBinary: function [left right operation][
     a: lrAsTensor left
     b: lrAsTensor right
     dims: lrBroadcastShape a\shape b\shape
-    data: []
+    data: lrFreshBlock
     count: lrCount dims
 
     if count > 0 [
@@ -204,8 +220,25 @@ lrTensorBinary: function [left right operation][
 
 lrTensorUnary: function [value operation][
     source: lrAsTensor value
-    data: map source\data 'item ->
-        (operation = 'neg)? -> 0.0 - item -> panic ~"learn: unknown unary tensor operation |operation|"
+    data: lrFreshBlock
+    loop source\data 'item [
+        result: null
+        if operation = 'neg -> result: 0.0 - item
+        if operation = 'exp -> result: exp item
+        if operation = 'log -> result: ln item
+        if operation = 'sigmoid [
+            if item >= 0.0 [
+                negativeItem: 0.0 - item
+                result: 1.0 / (1.0 + exp negativeItem)
+            ]
+            if item < 0.0 [
+                positiveExp: exp item
+                result: positiveExp / (1.0 + positiveExp)
+            ]
+        ]
+        if null? result -> panic ~"learn: unknown unary tensor operation |operation|"
+        'data ++ result
+    ]
     return lrMakeTensor source\shape data
 ]
 
@@ -225,7 +258,7 @@ transpose: function [value][
 
     rows: source\shape\0
     cols: source\shape\1
-    data: []
+    data: lrFreshBlock
     if (rows * cols) > 0 [
         loop 0..(cols - 1) 'col [
             loop 0..(rows - 1) 'row ->
@@ -256,6 +289,39 @@ square: function [value][
     return value ^ 2.0
 ]
 
+sigmoid: function [value][
+    if is? :learnValue value -> return lrValueUnary value 'sigmoid
+    return lrTensorUnary value 'sigmoid
+]
+
+tensorExp: function [value][
+    if is? :learnValue value -> return lrValueUnary value 'exp
+    return lrTensorUnary value 'exp
+]
+
+tensorLog: function [value][
+    if is? :learnValue value -> return lrValueUnary value 'log
+    return lrTensorUnary value 'log
+]
+
+binaryCrossEntropy: function [prediction target][
+    p: lrAsValue prediction
+    y: lrAsValue target
+    one: lrOnesLike p\value
+    epsilonValue: tensor 0.0000001
+    safeP: p + epsilonValue
+    oneMinusP: one - p
+    safeOneMinusP: oneMinusP + epsilonValue
+    logP: tensorLog safeP
+    positive: y * logP
+    oneMinusY: one - y
+    logOneMinusP: tensorLog safeOneMinusP
+    negative: oneMinusY * logOneMinusP
+    combined: positive + negative
+    negativeCombined: neg combined
+    return mean negativeCombined
+]
+
 matmul: function [left right][
     if or? [is? :learnValue left][is? :learnValue right] ->
         return lrValueMatmul left right
@@ -270,7 +336,7 @@ matmul: function [left right][
     rows: a\shape\0
     inner: a\shape\1
     cols: b\shape\1
-    data: []
+    data: lrFreshBlock
     if (rows * cols) > 0 [
         loop 0..(rows - 1) 'row [
             loop 0..(cols - 1) 'col [
@@ -291,11 +357,11 @@ lrTensorString: function [value][
     if empty? dims -> return to :string value\data\0
     if (size dims) = 1 -> return to :string value\data
 
-    rows: []
+    rows: lrFreshBlock
     cols: dims\1
     if dims\0 > 0 [
         loop 0..(dims\0 - 1) 'row [
-            values: []
+            values: lrFreshBlock
             if cols > 0 [
                 loop 0..(cols - 1) 'col -> 'values ++ value\data\[(row * cols) + col]
             ]

@@ -1,0 +1,157 @@
+; Named model state and portable checkpoints.
+
+import relative {./native}!
+
+lrNamedParameters: function [model][
+    unless is? :learnGraph model -> panic "learn: model state expects a graph"
+    result: lrFreshDictionary
+    loop model\names 'name [
+        item: model\values\[name]
+        if and? [is? :learnValue item][item\parameter] -> set result name item
+    ]
+    return result
+]
+
+stateDict: function [model][
+    named: lrNamedParameters model
+    names: lrFreshBlock
+    valuesByName: lrFreshDictionary
+    loop model\names 'name [
+        if key? named name [
+            item: named\[name]
+            'names ++ name
+            set valuesByName name #[
+                shape: new item\value\shape
+                buffer: tensorBuffer item\value
+            ]
+        ]
+    ]
+    return #[
+        format: "learn.state"
+        version: "0.10"
+        parameters: names
+        values: valuesByName
+    ]
+]
+
+lrValidateState: function [model state strict][
+    unless dictionary? state -> panic "learn: model state must be a dictionary"
+    unless and? [key? state 'format][state\format = "learn.state"] -> panic "learn: unsupported model state format"
+    unless and? [key? state 'version][state\version = "0.10"] -> panic "learn: unsupported model state version"
+    unless and? [key? state 'parameters][block? state\parameters] -> panic "learn: model state parameters must be a block"
+    unless and? [key? state 'values][dictionary? state\values] -> panic "learn: model state values must be a dictionary"
+
+    named: lrNamedParameters model
+    expectedNames: lrFreshBlock
+    loop model\names 'name [if key? named name -> 'expectedNames ++ name]
+    seenStateNames: lrFreshBlock
+    loop state\parameters 'name [
+        if contains? seenStateNames name -> panic ~"learn: model state repeats parameter |name|"
+        'seenStateNames ++ name
+    ]
+    if strict [
+        loop expectedNames 'name [
+            unless contains? state\parameters name -> panic ~"learn: model state is missing parameter |name|"
+        ]
+        loop state\parameters 'name [
+            unless key? named name -> panic ~"learn: model state has unexpected parameter |name|"
+        ]
+        loop keys state\values 'name [
+            unless contains? state\parameters to :literal name ->
+                panic ~"learn: model state has an unlisted value for parameter |name|"
+        ]
+    ]
+
+    restored: lrFreshDictionary
+    loop state\parameters 'name [
+        if key? named name [
+            unless key? state\values name -> panic ~"learn: model state has no value for parameter |name|"
+            entry: state\values\[name]
+            unless and? [dictionary? entry][and? [key? entry 'shape][key? entry 'buffer]] ->
+                panic ~"learn: model state parameter |name| is malformed"
+            parameter: named\[name]
+            unless entry\shape = parameter\value\shape ->
+                panic ~"learn: model state shape |entry\shape| does not match parameter |name| shape |parameter\value\shape|"
+            restoredValue: tensorFromBuffer entry\shape entry\buffer
+            unless restoredValue\device = parameter\value\device ->
+                panic ~"learn: model state device |restoredValue\device| does not match parameter |name| device |parameter\value\device|"
+            set restored name restoredValue
+        ]
+    ]
+    return #[named: named restored: restored]
+]
+
+loadStateDict: function [model state][
+    callAttrs: attrs
+    strict: true
+    if key? callAttrs 'strict -> strict: callAttrs\strict
+    unless logical? strict -> panic "learn: loadStateDict.strict must be logical"
+
+    validated: lrValidateState model state strict
+    loop keys validated\restored 'name [
+        parameter: validated\named\[name]
+        restored: validated\restored\[name]
+        parameter\value\data: new restored\data
+    ]
+    return model
+]
+
+lrCheckpointText: function [state][
+    rows: lrFreshBlock
+    loop state\parameters 'name [
+        entry: state\values\[name]
+        buffer: entry\buffer
+        'rows ++ @[@[
+            name
+            new entry\shape
+            buffer\device
+            buffer\dtype
+            new buffer\data
+        ]]
+    ]
+    payload: @[10010 rows]
+    return to :string payload
+]
+
+lrStateFromCheckpointText: function [text][
+    unless string? text -> panic "learn: checkpoint content must be a string"
+    payload: parse text
+    unless and? [block? payload][(size payload) = 2] -> panic "learn: malformed checkpoint payload"
+    unless payload\0 = 10010 -> panic "learn: unsupported checkpoint header"
+    rows: payload\1
+    unless block? rows -> panic "learn: checkpoint parameter rows must be a block"
+
+    names: lrFreshBlock
+    valuesByName: lrFreshDictionary
+    loop rows 'row [
+        unless and? [block? row][(size row) = 5] -> panic "learn: malformed checkpoint parameter row"
+        name: to :literal to :string row\0
+        if key? valuesByName name -> panic ~"learn: duplicate checkpoint parameter |name|"
+        dims: row\1
+        device: to :literal to :string row\2
+        dtype: to :literal to :string row\3
+        data: row\4
+        unless block? dims -> panic ~"learn: checkpoint shape for |name| must be a block"
+        unless block? data -> panic ~"learn: checkpoint data for |name| must be a block"
+        buffer: #[format: "learn.buffer" version: "0.9" device: device dtype: dtype count: size data data: data]
+        'names ++ name
+        set valuesByName name #[shape: dims buffer: buffer]
+    ]
+    return #[format: "learn.state" version: "0.10" parameters: names values: valuesByName]
+]
+
+saveCheckpoint: function [model path][
+    state: stateDict model
+    write (lrCheckpointText state) path
+    return path
+]
+
+loadCheckpoint: function [model path][
+    callAttrs: attrs
+    strict: true
+    if key? callAttrs 'strict -> strict: callAttrs\strict
+    content: read path
+    state: lrStateFromCheckpointText content
+    loadStateDict.strict: strict model state
+    return model
+]

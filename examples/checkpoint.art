@@ -1,0 +1,17 @@
+import relative {../src/learn}!
+
+do [
+    model: graph [
+        w: parameter tensor [1 2]
+        b: parameter 3.0
+    ]
+
+    path: "/tmp/learn-art-example.state"
+    saveCheckpoint model path
+
+    model\w\value\data: [9.0 9.0]
+    loadCheckpoint model path
+
+    print model\w
+    print model\b
+]

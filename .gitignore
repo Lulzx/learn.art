@@ -1,6 +1,7 @@
 .unitt/
 .learn-native/
 .learn-native-test/
+.learn-checkpoint-test.state
 native/*.dylib
 native/*.so
 native/*.dll

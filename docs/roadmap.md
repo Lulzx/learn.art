@@ -9,7 +9,8 @@
 - v0.7: optional compiled CPU fusion kernels with reference fallback.
 - v0.8: arbitrary-rank tensors, axis reductions, axis permutations, and safe scalar indexing.
 - v0.9: explicit CPU placement, differentiable transfers, and a versioned tensor-buffer contract.
+- v0.10: named model state, atomic strict restoration, and portable checkpoints.
 
 ## Next
 
-The next coherent milestone is model state: named state dictionaries, strict parameter restoration, and portable checkpoints built on the tensor-buffer contract.
+The next coherent milestone is generalized linear algebra: vector products and batched matrix multiplication with broadcasted batch dimensions and complete reverse-mode rules.

@@ -1,0 +1,80 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "model state and checkpoints" [
+    test "captures named owned parameter state" [
+        model: graph [
+            w: parameter tensor [1 2]
+            b: parameter 3.0
+        ]
+        state: stateDict model
+        set state\values\w\buffer\data 0 99.0
+        assert -> "learn.state" = state\format
+        assert -> "0.10" = state\version
+        assert -> ['w 'b] = state\parameters
+        assert -> [2] = state\values\w\shape
+        assert -> 1.0 = model\w\value\data\0
+    ]
+
+    test "restores parameters while preserving graph identity" [
+        model: graph [
+            w: parameter tensor [1 2]
+            b: parameter 3.0
+        ]
+        originalW: model\w
+        state: stateDict model
+        model\w\value\data: [9.0 9.0]
+        model\b\value\data: [8.0]
+        loadStateDict model state
+        assert -> same? originalW model\w
+        assert -> [1.0 2.0] = model\w\value\data
+        assert -> [3.0] = model\b\value\data
+    ]
+
+    test "validates the complete state before mutation" [
+        model: graph [
+            w: parameter tensor [1 2]
+            b: parameter 3.0
+        ]
+        state: stateDict model
+        state\values\w\buffer\data: [9.0 9.0]
+        state\values\b\shape: [2]
+        state\values\b\buffer: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: 'float64 count: 2 data: [7.0 8.0]]
+        rejected?: throws? [loadStateDict model state]
+        assert -> rejected?
+        assert -> [1.0 2.0] = model\w\value\data
+        assert -> [3.0] = model\b\value\data
+    ]
+
+    test "supports explicit non-strict partial restoration" [
+        model: graph [
+            w: parameter tensor [1 2]
+            b: parameter 3.0
+        ]
+        state: stateDict model
+        state\parameters: ['w]
+        state\values\w\buffer\data: [5.0 6.0]
+        strictRejected?: throws? [loadStateDict model state]
+        loadStateDict.strict: false model state
+        assert -> strictRejected?
+        assert -> [5.0 6.0] = model\w\value\data
+        assert -> [3.0] = model\b\value\data
+    ]
+
+    test "round-trips portable checkpoint files" [
+        model: graph [
+            w: parameter tensor [[1 2] [3 4]]
+            b: parameter 5.0
+        ]
+        path: ".learn-checkpoint-test.state"
+        saveCheckpoint model path
+        model\w\value\data: [0.0 0.0 0.0 0.0]
+        model\b\value\data: [0.0]
+        loadCheckpoint model path
+        assert -> [1.0 2.0 3.0 4.0] = model\w\value\data
+        assert -> [5.0] = model\b\value\data
+
+        malformedRejected?: throws? [lrStateFromCheckpointText "[999 []]"]
+        assert -> malformedRejected?
+    ]
+]

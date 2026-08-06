@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.9 combines arbitrary-rank, device-aware tensors and autograd with inspectable models, neural composition, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.10 combines arbitrary-rank, device-aware tensors and autograd with inspectable models, portable checkpoints, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -57,6 +57,8 @@ Every tensor carries an explicit device. v0.9 provides the CPU device, `tensor.d
 A graph evaluates its labeled block once to establish the operation DAG. `input` declares a placeholder and `forward.with:` supplies its runtime value. Graph fields are available dynamically (`model\loss`, `model\w`). `inputs`, `parameters`, and `operations` inspect its roles, while `graphData` returns a plain dictionary containing the graph order, nodes, shapes, operations, and parent relationships. `explain` renders that data for people.
 
 `sgd.rate: 0.05 (parameters model)` creates a stateful optimizer. `step` updates parameter tensor data while preserving graph identity.
+
+`stateDict model` returns an owned, named parameter snapshot built from tensor buffers. `loadStateDict model state` validates the complete snapshot before mutating anything and is strict by default; use `loadStateDict.strict: false` for intentional partial restoration. `saveCheckpoint model path` and `loadCheckpoint model path` round-trip the same state through a portable Arturo-text format that is parsed as data rather than executed.
 
 ## Regression API
 

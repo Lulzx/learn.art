@@ -116,6 +116,9 @@ lrExecuteDataNode: function [node parentValues][
         linear: matmul parentValues\0 parentValues\1
         return lrTensorBinary linear parentValues\2 'add
     ]
+    if operation = 'conv2d -> return lrTensorConv2d parentValues\0 parentValues\1 node\context\stride node\context\padding
+    if operation = 'maxPool2d -> return lrTensorPool2d parentValues\0 node\context\kernel node\context\stride node\context\padding 'max
+    if operation = 'avgPool2d -> return lrTensorPool2d parentValues\0 node\context\kernel node\context\stride node\context\padding 'average
     if operation = 'add -> return lrTensorBinary parentValues\0 parentValues\1 'add
     if operation = 'sub -> return lrTensorBinary parentValues\0 parentValues\1 'sub
     if operation = 'mul -> return lrTensorBinary parentValues\0 parentValues\1 'mul

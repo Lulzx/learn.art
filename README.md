@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.24 adds a pluggable backend registry and optional compiled MPSGraph execution through the vendored [`arturo-metal`](https://github.com/Lulzx/arturo-metal) package.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.25 adds GPU-resident MPSGraph training, an end-to-end MNIST workflow, and NCHW convolution/pooling schedules through the vendored [`arturo-metal`](https://github.com/Lulzx/arturo-metal) package.
 
 ## Example
 
@@ -40,6 +40,7 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 - `tensor value`, `tensor.zeros shape`, `tensor.ones shape`, and `tensor.random shape`
 - overloaded `+`, `-`, `*`, `/`, `^`, and unary `neg`
 - `shape`, `reshape`, `transpose`, `tensorAt`, `square`, `tensorSum`, `mean`, and `matmul`
+- `conv2d`, `maxPool2d`, and `avgPool2d` for NCHW tensors
 - `availableDevices`, `deviceOf`, `toDevice`, `tensorBuffer`, and `tensorFromBuffer`
 
 Tensors contain owned floating-point `data`, inferred `shape`, and row-major `strides`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices.
@@ -130,6 +131,19 @@ Dense layers use Xavier initialization with seed `0` by default; pass `denseLaye
 
 On macOS, build the vendored backend once with `cd vendor/metal && arturo scripts/build.art`. Import `src/metal-backend.art`, then use `compileMps schedule` and `executeMps.with: feeds artifact` for reusable compiled MPSGraph execution. Set `LEARN_METAL_LIBRARY` to override the dylib path. Dense math, broadcasting, reductions, activations, softmax, dropout, and cross entropy are lowered without CPU operator dispatch; `releaseMps` frees the compiled artifact.
 
+## GPU-resident training and MNIST
+
+Import `src/metal-training.art` and create `mpsMlpTrainer.rate:.seed: batch input hidden classes`. Its compiled program performs the dense forward pass, cross-entropy backward pass, ReLU gradient, SGD update, and next-step parameter handoff on MPSGraph. Only the scalar loss is downloaded during training; `mpsMlpState` is an explicit checkpoint boundary.
+
+`loadMpsMnist` maps raw IDX bytes directly into normalized float32 Metal tensors. `mpsMnistBatch` slices batches on the GPU, `trainMpsMnist.epochs:` trains them, and `evaluateMpsMnist` evaluates the test partition. The included one-epoch 784–128–10 example reached 94.57% test accuracy in 4.35 seconds on the development Apple M4 Pro; results vary by machine.
+
+```sh
+./scripts/download-mnist.sh
+arturo examples/mnist-mps.art
+```
+
+The downloader uses the [CVDF MNIST mirror](https://github.com/cvdfoundation/mnist) and validates the four gzip archives before extraction.
+
 ## Development
 
 The package requires Arturo 0.10.0 and uses [unitt](https://github.com/RickBarretto/unitt):
@@ -149,6 +163,7 @@ arturo examples/metrics.art
 arturo examples/inference.art
 arturo examples/explainability.art
 arturo examples/native-cpu.art
+arturo examples/mnist-mps.art
 ```
 
 The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Mixed dtypes, slice views, and mutation APIs remain outside the current milestone.

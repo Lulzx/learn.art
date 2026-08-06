@@ -1,0 +1,274 @@
+; GPU-resident MLP training and IDX-backed MNIST helpers.
+
+import relative {./metal-backend}!
+
+define :learnMpsMlpTrainer [
+    init: constructor [batchSize inputSize hiddenSize classCount rate trainingGraph trainingProgram inferenceGraph inferenceProgram state released]
+]
+
+define :learnMpsMnist [
+    init: constructor [trainingImages trainingLabels testImages testLabels context released]
+]
+
+lrMpsInitialParameter: function [dims kind seed][
+    spec: initializer.seed: seed kind
+    value: initializeTensor spec dims
+    return lrMetalUpload value\shape value\data
+]
+
+lrMpsInitialZeros: function [dims][
+    value: tensor.zeros dims
+    return lrMetalUpload value\shape value\data
+]
+
+lrMpsMlpTrainingProgram: function [batchSize inputSize hiddenSize classCount][
+    programGraph: metalGraph lrMetalState\runtime
+    features: metalGraphInput programGraph 'features @[batchSize inputSize]
+    targets: metalGraphInput programGraph 'targets @[batchSize]
+    firstWeight: metalGraphInput programGraph 'firstWeight @[inputSize hiddenSize]
+    firstBias: metalGraphInput programGraph 'firstBias @[hiddenSize]
+    secondWeight: metalGraphInput programGraph 'secondWeight @[hiddenSize classCount]
+    secondBias: metalGraphInput programGraph 'secondBias @[classCount]
+    learningRate: metalGraphInput programGraph 'learningRate []
+
+    firstProjection: metalGraphMatmul features firstWeight
+    firstShifted: metalGraphAdd firstProjection firstBias
+    hidden: metalGraphRelu firstShifted
+    secondProjection: metalGraphMatmul hidden secondWeight
+    logits: metalGraphAdd secondProjection secondBias
+    loss: metalGraphCrossEntropy logits targets
+    logitsGradient: metalGraphCrossEntropyGradient logits targets
+
+    hiddenTranspose: metalGraphTranspose hidden [1 0]
+    secondWeightGradient: metalGraphMatmul hiddenTranspose logitsGradient
+    secondBiasGradient: metalGraphSum logitsGradient 0
+    secondWeightTranspose: metalGraphTranspose secondWeight [1 0]
+    hiddenGradient: metalGraphMatmul logitsGradient secondWeightTranspose
+    firstShiftedGradient: metalGraphReluGradient hiddenGradient firstShifted
+    featuresTranspose: metalGraphTranspose features [1 0]
+    firstWeightGradient: metalGraphMatmul featuresTranspose firstShiftedGradient
+    firstBiasGradient: metalGraphSum firstShiftedGradient 0
+
+    firstWeightStep: metalGraphMul learningRate firstWeightGradient
+    firstBiasStep: metalGraphMul learningRate firstBiasGradient
+    secondWeightStep: metalGraphMul learningRate secondWeightGradient
+    secondBiasStep: metalGraphMul learningRate secondBiasGradient
+    nextFirstWeight: metalGraphSub firstWeight firstWeightStep
+    nextFirstBias: metalGraphSub firstBias firstBiasStep
+    nextSecondWeight: metalGraphSub secondWeight secondWeightStep
+    nextSecondBias: metalGraphSub secondBias secondBiasStep
+    program: metalCompile programGraph @[loss nextFirstWeight nextFirstBias nextSecondWeight nextSecondBias]
+    return @[programGraph program]
+]
+
+lrMpsMlpInferenceProgram: function [batchSize inputSize hiddenSize classCount][
+    programGraph: metalGraph lrMetalState\runtime
+    features: metalGraphInput programGraph 'features @[batchSize inputSize]
+    firstWeight: metalGraphInput programGraph 'firstWeight @[inputSize hiddenSize]
+    firstBias: metalGraphInput programGraph 'firstBias @[hiddenSize]
+    secondWeight: metalGraphInput programGraph 'secondWeight @[hiddenSize classCount]
+    secondBias: metalGraphInput programGraph 'secondBias @[classCount]
+    firstProjection: metalGraphMatmul features firstWeight
+    firstShifted: metalGraphAdd firstProjection firstBias
+    hidden: metalGraphRelu firstShifted
+    secondProjection: metalGraphMatmul hidden secondWeight
+    logits: metalGraphAdd secondProjection secondBias
+    program: metalCompile programGraph @[logits]
+    return @[programGraph program]
+]
+
+mpsMlpTrainer: function [batchSize inputSize hiddenSize classCount][
+    callAttrs: attrs
+    rate: 0.05
+    seed: 0
+    if key? callAttrs 'rate -> rate: callAttrs\rate
+    if key? callAttrs 'seed -> seed: callAttrs\seed
+    loop @[batchSize inputSize hiddenSize classCount] 'dimension [
+        unless and? [integer? dimension][dimension > 0] -> panic "learn: MPS MLP dimensions must be positive integers"
+    ]
+    unless and? [lrNumeric? rate][rate > 0.0] -> panic "learn: MPS MLP rate must be positive"
+    unless and? [integer? seed][seed >= 0] -> panic "learn: MPS MLP seed must be non-negative"
+
+    training: lrMpsMlpTrainingProgram batchSize inputSize hiddenSize classCount
+    inference: lrMpsMlpInferenceProgram batchSize inputSize hiddenSize classCount
+    parameterState: lrFreshDictionary
+    set parameterState 'firstWeight lrMpsInitialParameter @[inputSize hiddenSize] 'xavier seed
+    set parameterState 'firstBias lrMpsInitialZeros @[hiddenSize]
+    set parameterState 'secondWeight lrMpsInitialParameter @[hiddenSize classCount] 'xavier (seed + 1)
+    set parameterState 'secondBias lrMpsInitialZeros @[classCount]
+    set parameterState 'learningRate lrMetalUpload [] @[rate]
+    trainer: to :learnMpsMlpTrainer @[batchSize inputSize hiddenSize classCount (to :floating rate) training\0 training\1 inference\0 inference\1 parameterState false]
+    set trainer 'state parameterState
+    return trainer
+]
+
+lrMpsTrainerOpen: function [trainer][
+    unless is? :learnMpsMlpTrainer trainer -> panic "learn: expected an MPS MLP trainer"
+    if trainer\released -> panic "learn: MPS MLP trainer has been released"
+    return trainer
+]
+
+lrMpsTrainingFeed: function [candidate expectedShape temporaries][
+    if is? :metalTensor candidate [
+        source: metalTensorOpen candidate
+        unless source\shape = expectedShape -> panic ~"learn: MPS training feed shape |source\shape| does not match |expectedShape|"
+        return source
+    ]
+    source: lrAsTensor candidate
+    unless source\shape = expectedShape -> panic ~"learn: MPS training feed shape |source\shape| does not match |expectedShape|"
+    return lrMetalFeedTensor source temporaries
+]
+
+lrMpsTrainerFeeds: function [trainer features targets temporaries][
+    feeds: lrFreshDictionary
+    featureStorage: lrMpsTrainingFeed features @[trainer\batchSize trainer\inputSize] temporaries
+    set feeds 'features featureStorage
+    unless null? targets [
+        targetStorage: lrMpsTrainingFeed targets @[trainer\batchSize] temporaries
+        set feeds 'targets targetStorage
+    ]
+    loop ['firstWeight 'firstBias 'secondWeight 'secondBias] 'name -> set feeds name trainer\state\[name]
+    return feeds
+]
+
+mpsMlpStep: function [trainer features targets][
+    sourceTrainer: lrMpsTrainerOpen trainer
+    temporaries: lrFreshBlock
+    feeds: lrMpsTrainerFeeds sourceTrainer features targets temporaries
+    set feeds 'learningRate sourceTrainer\state\learningRate
+    results: metalRun.with: feeds sourceTrainer\trainingProgram
+    lossValues: metalDownload results\0
+    metalRelease sourceTrainer\state\firstWeight
+    metalRelease sourceTrainer\state\firstBias
+    metalRelease sourceTrainer\state\secondWeight
+    metalRelease sourceTrainer\state\secondBias
+    set sourceTrainer\state 'firstWeight results\1
+    set sourceTrainer\state 'firstBias results\2
+    set sourceTrainer\state 'secondWeight results\3
+    set sourceTrainer\state 'secondBias results\4
+    metalRelease results\0
+    loop temporaries 'temporary -> metalRelease temporary
+    return lossValues\0
+]
+
+mpsMlpPredict: function [trainer features][
+    sourceTrainer: lrMpsTrainerOpen trainer
+    temporaries: lrFreshBlock
+    feeds: lrMpsTrainerFeeds sourceTrainer features null temporaries
+    results: metalRun.with: feeds sourceTrainer\inferenceProgram
+    values: metalDownload results\0
+    prediction: lrMakeTensor results\0\shape values
+    metalRelease results\0
+    loop temporaries 'temporary -> metalRelease temporary
+    return prediction
+]
+
+mpsMlpState: function [trainer][
+    sourceTrainer: lrMpsTrainerOpen trainer
+    result: lrFreshDictionary
+    loop ['firstWeight 'firstBias 'secondWeight 'secondBias] 'name [
+        storage: sourceTrainer\state\[name]
+        set result name #[shape: new storage\shape data: metalDownload storage]
+    ]
+    return result
+]
+
+releaseMpsMlpTrainer: function [trainer][
+    sourceTrainer: lrMpsTrainerOpen trainer
+    loop values sourceTrainer\state 'storage -> metalRelease storage
+    metalRelease sourceTrainer\trainingProgram
+    metalRelease sourceTrainer\trainingGraph
+    metalRelease sourceTrainer\inferenceProgram
+    metalRelease sourceTrainer\inferenceGraph
+    sourceTrainer\released: true
+    return null
+]
+
+loadMpsMnist: function [directory][
+    unless string? directory -> panic "learn: loadMpsMnist expects a directory string"
+    runtime: lrMetalState\runtime
+    trainingImagesPath: directory ++ "/train-images-idx3-ubyte"
+    trainingLabelsPath: directory ++ "/train-labels-idx1-ubyte"
+    testImagesPath: directory ++ "/t10k-images-idx3-ubyte"
+    testLabelsPath: directory ++ "/t10k-labels-idx1-ubyte"
+    loop @[trainingImagesPath trainingLabelsPath testImagesPath testLabelsPath] 'sourcePath [
+        unless file? sourcePath -> panic ~"learn: MNIST IDX file not found at |sourcePath|"
+    ]
+    trainingImages: metalTensorFromBytes.offset: 16.scale: (1.0 / 255.0) runtime trainingImagesPath [60000 784]
+    trainingLabels: metalTensorFromBytes.offset: 8 runtime trainingLabelsPath [60000]
+    testImages: metalTensorFromBytes.offset: 16.scale: (1.0 / 255.0) runtime testImagesPath [10000 784]
+    testLabels: metalTensorFromBytes.offset: 8 runtime testLabelsPath [10000]
+    return to :learnMpsMnist @[trainingImages trainingLabels testImages testLabels runtime false]
+]
+
+lrMpsMnistOpen: function [dataset][
+    unless is? :learnMpsMnist dataset -> panic "learn: expected an MPS MNIST dataset"
+    if dataset\released -> panic "learn: MPS MNIST dataset has been released"
+    return dataset
+]
+
+mpsMnistBatch: function [dataset partition start count][
+    sourceDataset: lrMpsMnistOpen dataset
+    unless contains? ['train 'test] partition -> panic "learn: MNIST partition must be train or test"
+    unless and? [integer? start][and? [integer? count][and? [start >= 0][count > 0]]] -> panic "learn: MNIST batch range is invalid"
+    imageSource: (partition = 'train)? -> sourceDataset\trainingImages -> sourceDataset\testImages
+    labelSource: (partition = 'train)? -> sourceDataset\trainingLabels -> sourceDataset\testLabels
+    unless (start + count) =< imageSource\shape\0 -> panic "learn: MNIST batch exceeds the partition"
+    images: metalSlice imageSource 0 start count
+    labels: metalSlice labelSource 0 start count
+    return @[images labels]
+]
+
+trainMpsMnist: function [trainer dataset][
+    callAttrs: attrs
+    sourceTrainer: lrMpsTrainerOpen trainer
+    sourceDataset: lrMpsMnistOpen dataset
+    epochs: 1
+    if key? callAttrs 'epochs -> epochs: callAttrs\epochs
+    unless and? [integer? epochs][epochs > 0] -> panic "learn: MNIST epochs must be positive"
+    unless (60000 % sourceTrainer\batchSize) = 0 -> panic "learn: MNIST training size must be divisible by batch size"
+    batches: 60000 / sourceTrainer\batchSize
+    batches: to :integer batches
+    records: lrFreshBlock
+    loop 1..epochs 'epoch [
+        totalLoss: 0.0
+        loop 0..(batches - 1) 'batchIndex [
+            start: batchIndex * sourceTrainer\batchSize
+            batch: mpsMnistBatch sourceDataset 'train start sourceTrainer\batchSize
+            totalLoss: totalLoss + mpsMlpStep sourceTrainer batch\0 batch\1
+            metalRelease batch\1
+            metalRelease batch\0
+        ]
+        'records ++ @[#[epoch: epoch loss: totalLoss / batches]]
+    ]
+    return #[format: "learn.mps-training-history" version: "0.25" epochs: records batches: batches]
+]
+
+evaluateMpsMnist: function [trainer dataset][
+    sourceTrainer: lrMpsTrainerOpen trainer
+    sourceDataset: lrMpsMnistOpen dataset
+    unless (10000 % sourceTrainer\batchSize) = 0 -> panic "learn: MNIST test size must be divisible by batch size"
+    batches: 10000 / sourceTrainer\batchSize
+    batches: to :integer batches
+    correct: 0
+    loop 0..(batches - 1) 'batchIndex [
+        start: batchIndex * sourceTrainer\batchSize
+        batch: mpsMnistBatch sourceDataset 'test start sourceTrainer\batchSize
+        logits: mpsMlpPredict sourceTrainer batch\0
+        labels: metalDownload batch\1
+        predictions: classPrediction logits
+        loop 0..(sourceTrainer\batchSize - 1) 'row [
+            if predictions\data\[row] = labels\[row] -> correct: correct + 1
+        ]
+        metalRelease batch\1
+        metalRelease batch\0
+    ]
+    return (to :floating correct) / 10000.0
+]
+
+releaseMpsMnist: function [dataset][
+    sourceDataset: lrMpsMnistOpen dataset
+    loop @[sourceDataset\testLabels sourceDataset\testImages sourceDataset\trainingLabels sourceDataset\trainingImages] 'storage -> metalRelease storage
+    sourceDataset\released: true
+    return null
+]

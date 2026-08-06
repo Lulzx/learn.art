@@ -24,7 +24,8 @@
 - v0.22: immutable executable inference snapshots with optional preprocessing and a safe portable artifact codec.
 - v0.23: named input gradients, indexed saliency, and baseline-integrated gradients with state restoration.
 - v0.24: pluggable device backends and reusable compiled MPSGraph inference through `arturo-metal`.
+- v0.25: GPU-resident MLP training, direct IDX-backed MNIST execution, and NCHW convolution/pooling schedules.
 
 ## Next
 
-The next coherent milestone is GPU-resident training, beginning with an end-to-end MNIST MLP and reusable optimizer-state execution.
+The next coherent milestone is generalized compiled autodiff and optimizer-state graphs beyond the fixed MLP trainer.

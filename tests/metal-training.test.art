@@ -1,0 +1,34 @@
+import'unitt!
+import relative {../src/metal-training}!
+
+suite "GPU-resident Metal training" [
+    test "updates MLP parameters and reduces classification loss" [
+        trainer: mpsMlpTrainer.rate: 0.2.seed: 7 4 2 4 2
+        features: tensor [[0.0 0.0] [0.0 1.0] [1.0 0.0] [1.0 1.0]]
+        labels: tensor [0.0 0.0 1.0 1.0]
+        initialLoss: mpsMlpStep trainer features labels
+        finalLoss: initialLoss
+        loop 1..120 'unused -> finalLoss: mpsMlpStep trainer features labels
+        logits: mpsMlpPredict trainer features
+        predicted: classPrediction logits
+        state: mpsMlpState trainer
+        assert -> finalLoss < initialLoss
+        assert -> [0.0 0.0 1.0 1.0] = predicted\data
+        assert -> [2 4] = state\firstWeight\shape
+        assert -> [4 2] = state\secondWeight\shape
+        assert -> not? null? trainer\state\firstWeight
+        releaseMpsMlpTrainer trainer
+        assert -> trainer\released
+    ]
+
+    test "accepts batches already resident on Metal" [
+        trainer: mpsMlpTrainer.rate: 0.1.seed: 3 2 2 3 2
+        features: metalTensorFrom lrMetalState\runtime [[0.0 1.0] [1.0 0.0]]
+        labels: metalTensorFrom lrMetalState\runtime [0.0 1.0]
+        loss: mpsMlpStep trainer features labels
+        assert -> loss > 0.0
+        metalRelease labels
+        metalRelease features
+        releaseMpsMlpTrainer trainer
+    ]
+]

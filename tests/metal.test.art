@@ -68,4 +68,25 @@ suite "Metal backend" [
         releaseTensor gpu
         releaseMps artifact
     ]
+
+    test "lowers convolution and pooling schedules" [
+        imageNode: lrInputFrom tensor.zeros [1 1 4 4]
+        model: graph [
+            image: imageNode
+            weights: parameter tensor [[[[1 1] [1 1]]]]
+            convolution: conv2d image weights
+            pooled: maxPool2d convolution [2 2]
+        ]
+        feed: #[image: tensor [[[[1 2 3 4] [5 6 7 8] [9 10 11 12] [13 14 15 16]]]]]
+        data: graphData model
+        schedule: scheduleGraph data 'pooled
+        cpu: executeCpu.with: feed schedule
+        artifact: compileMps schedule
+        gpu: executeMps.with: feed artifact
+        delta: cpu\data\0 - gpu\data\0
+        assert -> (abs delta) < 0.00001
+        assert -> [1 1 1 1] = gpu\shape
+        releaseTensor gpu
+        releaseMps artifact
+    ]
 ]

@@ -10,3 +10,4 @@
 native/*.dylib
 native/*.so
 native/*.dll
+data/mnist/

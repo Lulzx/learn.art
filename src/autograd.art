@@ -108,6 +108,23 @@ lrValueDense: function [inputValue weight bias][
     return lrMakeValue #[value: result requiresGradient: requires operation: 'dense parents: @[source weightValue biasValue] parameter: false]
 ]
 
+lrValueConv2d: function [inputValue weights stride padding][
+    source: lrAsValue inputValue
+    kernel: lrAsValue weights
+    result: lrTensorConv2d source\value kernel\value stride padding
+    requires: or? [source\requiresGradient][kernel\requiresGradient]
+    context: #[stride: new stride padding: new padding]
+    return lrMakeValue #[value: result requiresGradient: requires operation: 'conv2d parents: @[source kernel] parameter: false context: context]
+]
+
+lrValuePool2d: function [inputValue kernel stride padding operation][
+    source: lrAsValue inputValue
+    result: lrTensorPool2d source\value kernel stride padding operation
+    context: #[kernel: lrImagePair kernel 1 stride: (null? stride)? -> new (lrImagePair kernel 1) -> lrImagePair stride 1 padding: lrImagePair padding 0]
+    operationName: (operation = 'max)? -> 'maxPool2d -> 'avgPool2d
+    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: operationName parents: @[source] parameter: false context: context]
+]
+
 lrValueReduce: function [value operation requestedAxis][
     source: lrAsValue value
     result: null
@@ -301,6 +318,9 @@ lrForwardNode: function [node][
         linear: matmul node\parents\0\value node\parents\1\value
         node\value: lrTensorBinary linear node\parents\2\value 'add
     ]
+    if op = 'conv2d -> node\value: lrTensorConv2d node\parents\0\value node\parents\1\value node\context\stride node\context\padding
+    if op = 'maxPool2d -> node\value: lrTensorPool2d node\parents\0\value node\context\kernel node\context\stride node\context\padding 'max
+    if op = 'avgPool2d -> node\value: lrTensorPool2d node\parents\0\value node\context\kernel node\context\stride node\context\padding 'average
     if op = 'add -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'add
     if op = 'sub -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'sub
     if op = 'mul -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'mul
@@ -353,6 +373,8 @@ backward: function [output][
         if or? [null? node\gradient][empty? node\parents] -> continue
         up: node\gradient
         op: node\operation
+
+        if contains? ['conv2d 'maxPool2d 'avgPool2d] op -> panic ~"learn: backward for |op| is not available; use compiled MPS training primitives"
 
         if op = 'add [
             lrAccumulate node\parents\0 up

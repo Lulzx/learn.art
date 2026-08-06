@@ -121,6 +121,9 @@ lrMetalOperation: function [artifact environment name node][
         projected: metalGraphMatmul parents\0 parents\1
         return metalGraphAdd projected parents\2
     ]
+    if operation = 'conv2d -> return metalGraphConv2d.stride: node\context\stride.padding: node\context\padding parents\0 parents\1
+    if operation = 'maxPool2d -> return metalGraphMaxPool2d.stride: node\context\stride.padding: node\context\padding parents\0 node\context\kernel
+    if operation = 'avgPool2d -> return metalGraphAvgPool2d.stride: node\context\stride.padding: node\context\padding parents\0 node\context\kernel
     if operation = 'add -> return metalGraphAdd parents\0 parents\1
     if operation = 'sub -> return metalGraphSub parents\0 parents\1
     if operation = 'mul -> return metalGraphMul parents\0 parents\1

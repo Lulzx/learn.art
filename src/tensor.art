@@ -527,6 +527,164 @@ lrTensorCrossEntropy: function [logitsValue targetsValue][
     return lrMakeTensorOn [] @[total / samples] logits\device
 ]
 
+lrImagePair: function [value fallback][
+    if integer? value -> return @[value value]
+    unless and? [block? value][(size value) = 2] -> panic "learn: expected an integer or two-element block"
+    result: new value
+    loop result 'item [unless and? [integer? item][item >= 0] -> panic "learn: image parameters must be non-negative integers"]
+    if and? [fallback > 0][or? [result\0 = 0][result\1 = 0]] -> panic "learn: image kernel and stride values must be positive"
+    return result
+]
+
+lrImageOutputSize: function [extent kernel stride padding][
+    twicePadding: 2 * padding
+    paddedExtent: extent + twicePadding
+    numerator: paddedExtent - kernel
+    unless numerator >= 0 -> panic "learn: image kernel exceeds padded input"
+    return (to :integer floor (numerator / stride)) + 1
+]
+
+lrTensorConv2d: function [inputValue weightValue strideValue paddingValue][
+    source: lrAsTensor inputValue
+    weights: lrAsTensor weightValue
+    unless source\device = weights\device -> panic "learn: conv2d operands must be on the same device"
+    unless (size source\shape) = 4 -> panic "learn: conv2d input must be NCHW rank 4"
+    unless (size weights\shape) = 4 -> panic "learn: conv2d weights must be OIHW rank 4"
+    unless source\shape\1 = weights\shape\1 -> panic "learn: conv2d channel counts do not match"
+    stride: lrImagePair strideValue 1
+    padding: lrImagePair paddingValue 0
+    batches: source\shape\0
+    channels: source\shape\1
+    inputHeight: source\shape\2
+    inputWidth: source\shape\3
+    outputs: weights\shape\0
+    kernelHeight: weights\shape\2
+    kernelWidth: weights\shape\3
+    outputHeight: lrImageOutputSize inputHeight kernelHeight stride\0 padding\0
+    outputWidth: lrImageOutputSize inputWidth kernelWidth stride\1 padding\1
+    outputData: lrFreshBlock
+    loop 0..(batches - 1) 'batch [
+        loop 0..(outputs - 1) 'outputChannel [
+            loop 0..(outputHeight - 1) 'outputY [
+                loop 0..(outputWidth - 1) 'outputX [
+                    total: 0.0
+                    loop 0..(channels - 1) 'channel [
+                        loop 0..(kernelHeight - 1) 'kernelY [
+                            loop 0..(kernelWidth - 1) 'kernelX [
+                                inputY: outputY * stride\0
+                                inputY: inputY + kernelY
+                                inputY: inputY - padding\0
+                                inputX: outputX * stride\1
+                                inputX: inputX + kernelX
+                                inputX: inputX - padding\1
+                                if and? [and? [inputY >= 0][inputY < inputHeight]][and? [inputX >= 0][inputX < inputWidth]] [
+                                    inputPlane: batch * channels
+                                    inputPlane: inputPlane + channel
+                                    inputRow: inputPlane * inputHeight
+                                    inputRow: inputRow + inputY
+                                    inputIndex: inputRow * inputWidth
+                                    inputIndex: inputIndex + inputX
+                                    weightPlane: outputChannel * channels
+                                    weightPlane: weightPlane + channel
+                                    weightRow: weightPlane * kernelHeight
+                                    weightRow: weightRow + kernelY
+                                    weightIndex: weightRow * kernelWidth
+                                    weightIndex: weightIndex + kernelX
+                                    total: total + (source\data\[inputIndex] * weights\data\[weightIndex])
+                                ]
+                            ]
+                        ]
+                    ]
+                    'outputData ++ total
+                ]
+            ]
+        ]
+    ]
+    return lrMakeTensorOn @[batches outputs outputHeight outputWidth] outputData source\device
+]
+
+lrTensorPool2d: function [inputValue kernelValue strideValue paddingValue operation][
+    source: lrAsTensor inputValue
+    unless (size source\shape) = 4 -> panic "learn: pool2d input must be NCHW rank 4"
+    kernel: lrImagePair kernelValue 1
+    stride: (null? strideValue)? -> new kernel -> lrImagePair strideValue 1
+    padding: lrImagePair paddingValue 0
+    batches: source\shape\0
+    channels: source\shape\1
+    inputHeight: source\shape\2
+    inputWidth: source\shape\3
+    outputHeight: lrImageOutputSize inputHeight kernel\0 stride\0 padding\0
+    outputWidth: lrImageOutputSize inputWidth kernel\1 stride\1 padding\1
+    outputData: lrFreshBlock
+    loop 0..(batches - 1) 'batch [
+        loop 0..(channels - 1) 'channel [
+            loop 0..(outputHeight - 1) 'outputY [
+                loop 0..(outputWidth - 1) 'outputX [
+                    total: 0.0
+                    maximum: null
+                    count: 0
+                    loop 0..(kernel\0 - 1) 'kernelY [
+                        loop 0..(kernel\1 - 1) 'kernelX [
+                            inputY: outputY * stride\0
+                            inputY: inputY + kernelY
+                            inputY: inputY - padding\0
+                            inputX: outputX * stride\1
+                            inputX: inputX + kernelX
+                            inputX: inputX - padding\1
+                            if and? [and? [inputY >= 0][inputY < inputHeight]][and? [inputX >= 0][inputX < inputWidth]] [
+                                inputPlane: batch * channels
+                                inputPlane: inputPlane + channel
+                                inputRow: inputPlane * inputHeight
+                                inputRow: inputRow + inputY
+                                inputIndex: inputRow * inputWidth
+                                inputIndex: inputIndex + inputX
+                                item: source\data\[inputIndex]
+                                total: total + item
+                                if or? [null? maximum][item > maximum] -> maximum: item
+                                count: count + 1
+                            ]
+                        ]
+                    ]
+                    if operation = 'max -> 'outputData ++ maximum
+                    if operation = 'average -> 'outputData ++ total / count
+                ]
+            ]
+        ]
+    ]
+    return lrMakeTensorOn @[batches channels outputHeight outputWidth] outputData source\device
+]
+
+conv2d: function [inputValue weights][
+    callAttrs: attrs
+    stride: [1 1]
+    padding: [0 0]
+    if key? callAttrs 'stride -> stride: callAttrs\stride
+    if key? callAttrs 'padding -> padding: callAttrs\padding
+    if is? :learnValue inputValue -> return lrValueConv2d inputValue weights stride padding
+    if is? :learnValue weights -> return lrValueConv2d inputValue weights stride padding
+    return lrTensorConv2d inputValue weights stride padding
+]
+
+maxPool2d: function [inputValue kernel][
+    callAttrs: attrs
+    stride: null
+    padding: [0 0]
+    if key? callAttrs 'stride -> stride: callAttrs\stride
+    if key? callAttrs 'padding -> padding: callAttrs\padding
+    if is? :learnValue inputValue -> return lrValuePool2d inputValue kernel stride padding 'max
+    return lrTensorPool2d inputValue kernel stride padding 'max
+]
+
+avgPool2d: function [inputValue kernel][
+    callAttrs: attrs
+    stride: null
+    padding: [0 0]
+    if key? callAttrs 'stride -> stride: callAttrs\stride
+    if key? callAttrs 'padding -> padding: callAttrs\padding
+    if is? :learnValue inputValue -> return lrValuePool2d inputValue kernel stride padding 'average
+    return lrTensorPool2d inputValue kernel stride padding 'average
+]
+
 reshape: function [value dims][
     if is? :learnValue value -> return lrValueReshape value dims
     source: lrAsTensor value

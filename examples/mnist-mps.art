@@ -1,0 +1,15 @@
+import relative {../src/metal-training}!
+
+dataset: loadMpsMnist "data/mnist"
+trainer: mpsMlpTrainer.rate: 0.01.seed: 7 100 784 128 10
+
+elapsed: benchmark.get [history: trainMpsMnist.epochs: 1 trainer dataset]
+accuracy: evaluateMpsMnist trainer dataset
+
+print ["device:" lrMetalState\runtime\info]
+print ["epoch:" last history\epochs]
+print ["test accuracy:" accuracy]
+print ["elapsed:" elapsed]
+
+releaseMpsMlpTrainer trainer
+releaseMpsMnist dataset

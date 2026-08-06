@@ -1,0 +1,43 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "convolution and pooling" [
+    test "computes NCHW convolution and pooling on CPU" [
+        image: tensor [[[[1 2 3 4] [5 6 7 8] [9 10 11 12] [13 14 15 16]]]]
+        weights: tensor [[[[1 1] [1 1]]]]
+        convolution: conv2d image weights
+        maximum: maxPool2d image [2 2]
+        average: avgPool2d image [2 2]
+        assert -> [1 1 3 3] = convolution\shape
+        assert -> [14.0 18.0 22.0 30.0 34.0 38.0 46.0 50.0 54.0] = convolution\data
+        assert -> [6.0 8.0 14.0 16.0] = maximum\data
+        assert -> [3.5 5.5 11.5 13.5] = average\data
+    ]
+
+    test "exports and schedules image operations" [
+        imageNode: lrInputFrom tensor.zeros [1 1 4 4]
+        model: graph [
+            image: imageNode
+            weights: parameter tensor [[[[1 1] [1 1]]]]
+            convolution: conv2d image weights
+            pooled: maxPool2d convolution [2 2]
+        ]
+        feed: #[image: tensor [[[[1 2 3 4] [5 6 7 8] [9 10 11 12] [13 14 15 16]]]]]
+        data: graphData model
+        schedule: scheduleGraph data 'pooled
+        result: executeCpu.with: feed schedule
+        assert -> [1 1 1 1] = result\shape
+        assert -> [34.0] = result\data
+        assert -> 'conv2d = data\nodes\convolution\operation
+        assert -> 'maxPool2d = data\nodes\pooled\operation
+    ]
+
+    test "rejects unsupported convolution backward explicitly" [
+        image: variable tensor [[[[1 2] [3 4]]]]
+        weights: tensor [[[[1]]]]
+        convolution: conv2d image weights
+        loss: tensorSum convolution
+        rejected?: throws? [backward loss]
+        assert -> rejected?
+    ]
+]

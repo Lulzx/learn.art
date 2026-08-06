@@ -174,3 +174,126 @@ loadSessionCheckpoint: function [model optimizer iterator path][
     loadBatcherState iterator validatedBatcher
     return model
 ]
+
+lrTrainingFeed: function [inputNames batch][
+    feed: lrFreshDictionary
+    set feed inputNames\0 batch\features
+    set feed inputNames\1 batch\targets
+    return feed
+]
+
+lrTrainingLoss: function [model lossName][
+    lossValue: model\values\[lossName]
+    unless is? :learnValue lossValue -> panic ~"learn: training loss |lossName| must be differentiable"
+    unless (size lossValue\value\data) = 1 -> panic ~"learn: training loss |lossName| must be scalar"
+    return lossValue\value\data\0
+]
+
+lrValidateTrainingNames: function [model inputNames lossName][
+    unless and? [block? inputNames][(size inputNames) = 2] -> panic "learn: train.inputs must contain feature and target input names"
+    normalized: lrFreshBlock
+    loop inputNames 'inputName [
+        literalName: to :literal inputName
+        unless contains? model\inputList literalName -> panic ~"learn: graph has no training input named |literalName|"
+        'normalized ++ literalName
+    ]
+    unless key? model\values lossName -> panic ~"learn: graph has no loss named |lossName|"
+    return normalized
+]
+
+lrValidationLoss: function [model validation inputNames lossName batchSize][
+    unless dictionary? validation -> panic "learn: train.validation must be a features/targets dictionary"
+    unless and? [key? validation 'features][key? validation 'targets] -> panic "learn: train.validation requires features and targets"
+    validationIterator: batcher.size: batchSize.shuffle: false validation\features validation\targets
+    validationRows: validationIterator\features\shape\0
+    if validationRows = 0 -> panic "learn: validation dataset cannot be empty"
+    weightedLoss: 0.0
+    while [validationIterator\position < validationRows][
+        batch: nextBatch validationIterator
+        feed: lrTrainingFeed inputNames batch
+        forward.with: feed model
+        batchRows: size batch\indices
+        batchLoss: lrTrainingLoss model lossName
+        weightedLoss: weightedLoss + (batchLoss * batchRows)
+    ]
+    return weightedLoss / validationRows
+]
+
+; Train for a number of additional epochs. A callback is named with a literal,
+; receives the completed epoch record, and returns false to stop early.
+train: function [model optimizer iterator][
+    callAttrs: attrs
+    epochs: 1
+    inputNames: ['x 'y]
+    lossName: 'loss
+    validation: null
+    callbackName: null
+    if key? callAttrs 'epochs -> epochs: callAttrs\epochs
+    if key? callAttrs 'inputs -> inputNames: callAttrs\inputs
+    if key? callAttrs 'loss -> lossName: to :literal callAttrs\loss
+    if key? callAttrs 'validation -> validation: callAttrs\validation
+    if key? callAttrs 'callback -> callbackName: callAttrs\callback
+
+    unless is? :learnGraph model -> panic "learn: train expects a graph"
+    unless or? [is? :learnSgd optimizer][or? [is? :learnMomentum optimizer][is? :learnAdam optimizer]] -> panic "learn: train expects an optimizer"
+    unless is? :learnBatcher iterator -> panic "learn: train expects a batcher"
+    unless and? [integer? epochs][epochs > 0] -> panic "learn: train.epochs must be a positive integer"
+    names: lrValidateTrainingNames model inputNames lossName
+    unless null? callbackName [unless literal? callbackName -> panic "learn: train.callback must be a function name literal"]
+
+    records: lrFreshBlock
+    totalBatches: 0
+    stoppedEarly: false
+    stopReason: null
+    completed: 0
+    rows: iterator\features\shape\0
+    if rows = 0 -> panic "learn: training dataset cannot be empty"
+
+    while [completed < epochs][
+        if iterator\position >= rows [
+            iterator\epoch: iterator\epoch + 1
+            iterator\position: 0
+            iterator\order: lrBatchOrder rows iterator\seed iterator\epoch iterator\shuffle
+        ]
+        partialEpoch: iterator\position > 0
+        epochLoss: 0.0
+        epochRows: 0
+        epochBatches: 0
+        epochNumber: iterator\epoch
+        while [iterator\position < rows][
+            batch: nextBatch iterator
+            feed: lrTrainingFeed names batch
+            zeroGrad model
+            forward.with: feed model
+            backward model\values\[lossName]
+            step optimizer
+            batchRows: size batch\indices
+            batchLoss: lrTrainingLoss model lossName
+            epochLoss: epochLoss + (batchLoss * batchRows)
+            epochRows: epochRows + batchRows
+            epochBatches: epochBatches + 1
+            totalBatches: totalBatches + 1
+        ]
+        meanLoss: epochLoss / epochRows
+        validationLoss: null
+        unless null? validation -> validationLoss: lrValidationLoss model validation names lossName iterator\batchSize
+        record: #[epoch: epochNumber trainLoss: meanLoss validationLoss: validationLoss batches: epochBatches rows: epochRows partial: partialEpoch]
+        'records ++ @[record]
+        completed: completed + 1
+        iterator\epoch: iterator\epoch + 1
+        iterator\position: 0
+        iterator\order: lrBatchOrder rows iterator\seed iterator\epoch iterator\shuffle
+
+        unless null? callbackName [
+            shouldContinue: call callbackName @[record]
+            unless logical? shouldContinue -> panic "learn: training callback must return a logical value"
+            unless shouldContinue [
+                stoppedEarly: true
+                stopReason: "callback"
+                break
+            ]
+        ]
+    ]
+
+    return #[format: "learn.training-history" version: "0.14" epochs: records batches: totalBatches stoppedEarly: stoppedEarly stopReason: stopReason]
+]

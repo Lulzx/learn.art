@@ -13,7 +13,8 @@
 - v0.11: vector products and broadcasted batched matrix multiplication with gradients.
 - v0.12: optimizer state and atomic model-plus-optimizer training checkpoints.
 - v0.13: deterministic paired mini-batches and fully resumable training-session checkpoints.
+- v0.14: resumable high-level training with named feeds, validation, history, and callback stopping.
 
 ## Next
 
-The next coherent milestone is a high-level training loop: named graph feeds, epoch/batch accounting, loss history, validation passes, and callback-based early stopping over resumable sessions.
+The next coherent milestone is training control: gradient clipping and learning-rate schedules that compose with the high-level loop and survive checkpoints.

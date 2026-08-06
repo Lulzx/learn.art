@@ -81,4 +81,106 @@ suite "deterministic mini-batch training" [
         assert -> mismatch?
         assert -> invalidState?
     ]
+
+    test "trains named graph inputs and records epoch history" [
+        features: tensor [0.0 1.0 2.0 3.0]
+        targets: tensor [1.0 3.0 5.0 7.0]
+        model: graph [
+            featuresIn: input
+            targetsIn: input
+            weight: parameter 0.0
+            bias: parameter 0.0
+            scaled: featuresIn * weight
+            prediction: scaled + bias
+            error: prediction - targetsIn
+            objective: mean square error
+        ]
+        optimizer: sgd.rate: 0.05 (parameters model)
+        iterator: batcher.size: 2.shuffle: false features targets
+        history: train.epochs: 80.inputs: ['featuresIn 'targetsIn].loss: 'objective model optimizer iterator
+        firstEpoch: history\epochs\0
+        lastEpoch: history\epochs\79
+        assert -> "learn.training-history" = history\format
+        assert -> 160 = history\batches
+        assert -> firstEpoch\trainLoss > lastEpoch\trainLoss
+        assert -> iterator\epoch = 80
+        assert -> iterator\position = 0
+        weightError: abs (model\weight\value\data\0 - 2.0)
+        assert -> weightError < 0.1
+    ]
+
+    test "reports validation loss without optimizer steps" [
+        features: tensor [1.0 2.0]
+        targets: tensor [2.0 4.0]
+        model: graph [
+            x: input
+            y: input
+            weight: parameter 0.0
+            prediction: x * weight
+            error: prediction - y
+            loss: mean square error
+        ]
+        optimizer: adam.rate: 0.1 (parameters model)
+        iterator: batcher.size: 1.shuffle: false features targets
+        validation: #[features: features targets: targets]
+        history: train.epochs: 2.validation: validation model optimizer iterator
+        assert -> 4 = history\batches
+        assert -> 4 = optimizer\timestep
+        assert -> floating? history\epochs\0\validationLoss
+    ]
+
+    test "stops when an epoch callback returns false" [
+        stopAfterEpochZero: function [record][record\epoch < 0]
+        features: tensor [1.0 2.0]
+        targets: tensor [2.0 4.0]
+        model: graph [
+            x: input
+            y: input
+            weight: parameter 0.0
+            prediction: x * weight
+            error: prediction - y
+            loss: mean square error
+        ]
+        optimizer: sgd.rate: 0.1 (parameters model)
+        iterator: batcher.size: 2.shuffle: false features targets
+        history: train.epochs: 5.callback: 'stopAfterEpochZero model optimizer iterator
+        assert -> history\stoppedEarly
+        assert -> "callback" = history\stopReason
+        assert -> 1 = size history\epochs
+        assert -> 1 = history\batches
+    ]
+
+    test "continues a partially consumed epoch" [
+        features: tensor [1.0 2.0 3.0 4.0]
+        targets: tensor [2.0 4.0 6.0 8.0]
+        model: graph [
+            x: input
+            y: input
+            weight: parameter 0.0
+            prediction: x * weight
+            error: prediction - y
+            loss: mean square error
+        ]
+        optimizer: sgd.rate: 0.01 (parameters model)
+        iterator: batcher.size: 2.shuffle: false features targets
+        discard nextBatch iterator
+        history: train model optimizer iterator
+        record: history\epochs\0
+        assert -> record\partial
+        assert -> 1 = record\batches
+        assert -> 2 = record\rows
+        assert -> 1 = iterator\epoch
+    ]
+
+    test "validates training-loop configuration" [
+        features: tensor [1.0]
+        targets: tensor [2.0]
+        model: graph [x: input y: input weight: parameter 0.0 prediction: x * weight error: prediction - y loss: mean square error]
+        optimizer: sgd (parameters model)
+        iterator: batcher features targets
+        badEpochs?: throws? [train.epochs: 0 model optimizer iterator]
+        badInputs?: throws? [train.inputs: ['missing 'y] model optimizer iterator]
+        assert -> badEpochs?
+        assert -> badInputs?
+    ]
 ]

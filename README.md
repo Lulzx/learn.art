@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.13 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, deterministic mini-batching, resumable training sessions, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.14 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, resumable high-level training, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -24,16 +24,12 @@ do [
     ]
 
     optimizer: sgd.rate: 0.05 (parameters model)
-
-    do.times: 500 [
-        zeroGrad model
-        forward.with: #[x: xTrain y: yTrain] model
-        backward model\loss
-        step optimizer
-    ]
+    batches: batcher.size: 2.shuffle: false xTrain yTrain
+    history: train.epochs: 250 model optimizer batches
 
     print model\w
     print model\b
+    print last history\epochs
 ]
 ```
 
@@ -66,6 +62,8 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 
 `batcher.size:.seed:` creates a deterministic paired feature/target iterator. `nextBatch` returns owned batch tensors, original row indices, and the current epoch. `batcherState` restores the exact permutation and cursor, while `saveSessionCheckpoint` and `loadSessionCheckpoint` atomically combine model, optimizer, and data-order state.
 
+`train.epochs:` consumes that iterator and returns `learn.training-history` with weighted training loss, validation loss, batch counts, and partial-epoch metadata. Use `train.inputs: ['features 'labels]` and `train.loss: 'objective` for custom graph names, `train.validation: #[features: xValid targets: yValid]` for validation passes, and `train.callback: 'functionName` to stop when an epoch callback returns `false`. A completed epoch leaves the batcher positioned at the start of the next epoch, so session checkpoints remain directly resumable.
+
 ## Regression API
 
 `fit.linear features targets` and `fit.logistic features targets` build and train ordinary learn graphs. Use `predict`, `predict.probability`, `score`, `mse`, and `accuracy` to evaluate them. `split.ratio:` performs a deterministic paired row split. The first estimator layer accepts vectors or one-column matrices.
@@ -89,6 +87,7 @@ arturo -p install unitt
 ~/.arturo/packages/bin/unitt --no-color
 arturo examples/linear.art
 arturo examples/regression.art
+arturo examples/training-loop.art
 arturo examples/native-cpu.art
 ```
 

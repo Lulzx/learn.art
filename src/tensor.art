@@ -1,4 +1,4 @@
-; Dense, owned, row-major tensors of rank zero through two.
+; Dense, owned, row-major tensors of arbitrary rank.
 
 lrFreshDictionary: function [][
     ; Empty literals are reused by Arturo 0.10. A dynamically allocated block
@@ -50,17 +50,17 @@ lrCount: function [dims][
 ]
 
 lrStrides: function [dims][
-    case size dims [
-        0 -> return []
-        1 -> return [1]
-        2 -> return @[dims\1 1]
+    result: lrFreshBlock
+    running: 1
+    loop reverse dims 'dim [
+        'result ++ running
+        running: running * dim
     ]
-    panic "learn: tensors are limited to rank 0, 1, or 2"
+    return reverse result
 ]
 
 lrValidateShape: function [dims][
     unless block? dims -> panic "learn: a tensor shape must be a block"
-    if (size dims) > 2 -> panic "learn: tensors are limited to rank 0, 1, or 2"
     loop dims 'dim [
         unless integer? dim -> panic "learn: tensor dimensions must be integers"
         if dim < 0 -> panic "learn: tensor dimensions cannot be negative"
@@ -68,46 +68,57 @@ lrValidateShape: function [dims][
     return dims
 ]
 
+lrInferShape: function [source][
+    if lrNumeric? source -> return lrFreshBlock
+    unless block? source -> panic ~"learn: tensor values must be numeric or nested blocks, got |type source|"
+    if empty? source -> return [0]
+
+    childShape: lrInferShape first source
+    loop source 'item [
+        itemShape: lrInferShape item
+        unless itemShape = childShape -> panic "learn: tensor blocks must have a rectangular shape"
+    ]
+    result: @[(size source)]
+    loop childShape 'dim -> 'result ++ dim
+    return result
+]
+
+lrFlattenTensorData: function [source output][
+    if lrNumeric? source [
+        'output ++ lrFloat source
+        return null
+    ]
+    loop source 'item -> lrFlattenTensorData item output
+    return null
+]
+
 lrMakeTensor: function [dims data][
     lrValidateShape dims
     unless (lrCount dims) = (size data) ->
         panic ~"learn: shape |dims| requires |lrCount dims| values, got |size data|"
 
-    floats: map data 'item -> lrFloat item
+    floats: lrFreshBlock
+    loop data 'item -> 'floats ++ lrFloat item
     args: lrArgs 3
     set args 0 new dims
     set args 1 lrStrides dims
     set args 2 floats
-    return to :learnTensor args
+    result: to :learnTensor args
+    ; Arturo may intern structurally equal constructor arguments. Reinstall
+    ; owned blocks so equal tensors never share mutable storage.
+    set result 'shape new dims
+    set result 'strides lrStrides dims
+    set result 'data new floats
+    return result
 ]
 
 lrTensorFromData: function [source][
     if lrNumeric? source -> return lrMakeTensor [] @[source]
     unless block? source -> panic "learn: tensor expects a number or a block"
-
-    if empty? source -> return lrMakeTensor [0] []
-
-    firstItem: first source
-    if block? firstItem [
-        cols: size firstItem
-        flat: lrFreshBlock
-        loop source 'row [
-            unless block? row -> panic "learn: matrix rows must all be blocks"
-            unless (size row) = cols -> panic "learn: matrix rows must have equal length"
-            loop row 'item [
-                if block? item -> panic "learn: tensors above rank 2 are not supported"
-                'flat ++ lrFloat item
-            ]
-        ]
-        return lrMakeTensor @[(size source) cols] flat
-    ]
-
+    dims: lrInferShape source
     flat: lrFreshBlock
-    loop source 'item [
-        if block? item -> panic "learn: vector values cannot mix numbers and blocks"
-        'flat ++ lrFloat item
-    ]
-    return lrMakeTensor @[size source] flat
+    lrFlattenTensorData source flat
+    return lrMakeTensor dims flat
 ]
 
 tensor: function [source][
@@ -148,50 +159,82 @@ shape: function [value][
 ]
 
 lrBroadcastShape: function [left right][
-    if empty? left -> return new right
-    if empty? right -> return new left
-
-    if and? [(size left) = 1][(size right) = 1] [
-        a: left\0
-        b: right\0
+    rank: max @[(size left) (size right)]
+    result: lrFreshBlock
+    if rank > 0 [loop 0..(rank - 1) 'axis [
+        leftOffset: axis - (rank - (size left))
+        rightOffset: axis - (rank - (size right))
+        a: (leftOffset < 0)? -> 1 -> left\[leftOffset]
+        b: (rightOffset < 0)? -> 1 -> right\[rightOffset]
         unless or? [a = b][or? [a = 1][b = 1]] ->
             panic ~"learn: cannot broadcast shapes |left| and |right|"
-        return @[max @[a b]]
-    ]
-
-    ; Align rank-one tensors with the trailing matrix dimension.
-    arows: ((size left) = 2)? -> left\0 -> 1
-    acols: ((size left) = 2)? -> left\1 -> left\0
-    brows: ((size right) = 2)? -> right\0 -> 1
-    bcols: ((size right) = 2)? -> right\1 -> right\0
-
-    unless or? [arows = brows][or? [arows = 1][brows = 1]] ->
-        panic ~"learn: cannot broadcast shapes |left| and |right|"
-    unless or? [acols = bcols][or? [acols = 1][bcols = 1]] ->
-        panic ~"learn: cannot broadcast shapes |left| and |right|"
-
-    return @[max @[arows brows] max @[acols bcols]]
+        outputDim: a
+        if a = 1 -> outputDim: b
+        if b = 1 -> outputDim: a
+        'result ++ outputDim
+    ]]
+    return result
 ]
 
 lrBroadcastIndex: function [dims outDims flatIndex][
     if empty? dims -> return 0
-    if (size outDims) = 1 [
-        if dims\0 = 1 -> return 0
-        return flatIndex
+    outStrides: lrStrides outDims
+    sourceStrides: lrStrides dims
+    offset: (size outDims) - (size dims)
+    sourceIndex: 0
+    loop 0..((size dims) - 1) 'sourceAxis [
+        outAxis: sourceAxis + offset
+        coordinate: to :integer floor (flatIndex / outStrides\[outAxis])
+        coordinate: coordinate % outDims\[outAxis]
+        if dims\[sourceAxis] = 1 -> coordinate: 0
+        sourceIndex: sourceIndex + (coordinate * sourceStrides\[sourceAxis])
     ]
+    return sourceIndex
+]
 
-    cols: outDims\1
-    row: to :integer floor (flatIndex / cols)
-    col: flatIndex % cols
+lrNormalizeAxis: function [axis rank][
+    unless integer? axis -> panic "learn: tensor axis must be an integer"
+    normalized: axis
+    if normalized < 0 -> normalized: normalized + rank
+    unless and? [normalized >= 0][normalized < rank] ->
+        panic ~"learn: axis |axis| is out of bounds for rank |rank|"
+    return normalized
+]
 
-    if (size dims) = 1 [
-        if dims\0 = 1 -> return 0
-        return col
-    ]
+lrCoordinates: function [dims flatIndex][
+    strides: lrStrides dims
+    result: lrFreshBlock
+    if not? empty? dims [loop 0..((size dims) - 1) 'axis [
+        coordinate: to :integer floor (flatIndex / strides\[axis])
+        'result ++ (coordinate % dims\[axis])
+    ]]
+    return result
+]
 
-    sourceRow: (dims\0 = 1)? -> 0 -> row
-    sourceCol: (dims\1 = 1)? -> 0 -> col
-    return (sourceRow * dims\1) + sourceCol
+lrFlatIndex: function [dims coordinates][
+    unless (size dims) = (size coordinates) ->
+        panic ~"learn: expected |size dims| indices, got |size coordinates|"
+    strides: lrStrides dims
+    result: 0
+    if not? empty? dims [loop 0..((size dims) - 1) 'axis [
+        coordinate: coordinates\[axis]
+        unless integer? coordinate -> panic "learn: tensor indices must be integers"
+        if coordinate < 0 -> coordinate: coordinate + dims\[axis]
+        unless and? [coordinate >= 0][coordinate < dims\[axis]] ->
+            panic ~"learn: index |coordinates\[axis]| is out of bounds for axis |axis| of size |dims\[axis]|"
+        result: result + (coordinate * strides\[axis])
+    ]]
+    return result
+]
+
+tensorAt: function [value indices][
+    if is? :learnValue value -> return lrValueAt value indices
+    source: lrAsTensor value
+    coordinates: indices
+    if and? [integer? indices][(size source\shape) = 1] -> coordinates: @[indices]
+    unless block? coordinates -> panic "learn: tensorAt expects an index block"
+    offset: lrFlatIndex source\shape coordinates
+    return lrMakeTensor [] @[source\data\[offset]]
 ]
 
 lrTensorBinary: function [left right operation][
@@ -256,38 +299,107 @@ reshape: function [value dims][
     return lrMakeTensor dims source\data
 ]
 
-transpose: function [value][
-    if is? :learnValue value -> return lrValueTranspose value
-    source: lrAsTensor value
-    unless (size source\shape) = 2 -> return lrMakeTensor source\shape source\data
-
-    rows: source\shape\0
-    cols: source\shape\1
-    data: lrFreshBlock
-    if (rows * cols) > 0 [
-        loop 0..(cols - 1) 'col [
-            loop 0..(rows - 1) 'row ->
-                'data ++ source\data\[(row * cols) + col]
+lrTransposeAxes: function [dims requestedAxes][
+    rank: size dims
+    axes: lrFreshBlock
+    if null? requestedAxes [
+        if rank > 0 [loop 0..(rank - 1) 'axis -> 'axes ++ axis]
+        if rank >= 2 [
+            previous: axes\[rank - 2]
+            set axes (rank - 2) axes\[rank - 1]
+            set axes (rank - 1) previous
         ]
     ]
-    return lrMakeTensor @[cols rows] data
+    unless null? requestedAxes -> axes: new requestedAxes
+    unless (size axes) = rank -> panic ~"learn: transpose needs |rank| axes"
+    loop axes 'axis [
+        normalized: lrNormalizeAxis axis rank
+        unless normalized = axis -> panic "learn: transpose axes must use non-negative indices"
+        occurrences: size (select axes 'candidate -> candidate = axis)
+        unless occurrences = 1 ->
+            panic "learn: transpose axes must be a permutation"
+    ]
+    return axes
+]
+
+transpose: function [value][
+    callAttrs: attrs
+    requestedAxes: null
+    if key? callAttrs 'axes -> requestedAxes: callAttrs\axes
+    if is? :learnValue value -> return lrValueTranspose value requestedAxes
+    source: lrAsTensor value
+    rank: size source\shape
+    axes: lrTransposeAxes source\shape requestedAxes
+
+    outputShape: lrFreshBlock
+    loop axes 'axis -> 'outputShape ++ source\shape\[axis]
+    data: lrFreshBlock
+    count: lrCount outputShape
+    if count > 0 [
+        loop 0..(count - 1) 'outputIndex [
+            outputCoordinates: lrCoordinates outputShape outputIndex
+            sourceCoordinates: lrArgs rank
+            if rank > 0 [
+                loop 0..(rank - 1) 'outputAxis [
+                    sourceAxis: axes\[outputAxis]
+                    coordinate: outputCoordinates\[outputAxis]
+                    set sourceCoordinates sourceAxis coordinate
+                ]
+            ]
+            sourceIndex: lrFlatIndex source\shape sourceCoordinates
+            'data ++ source\data\[sourceIndex]
+        ]
+    ]
+    return lrMakeTensor outputShape data
 ]
 
 tensorSum: function [value][
-    if is? :learnValue value -> return lrValueReduce value 'sum
+    requestedAxis: attr 'axis
+    if is? :learnValue value -> return lrValueReduce value 'sum requestedAxis
     source: lrAsTensor value
+    unless null? requestedAxis -> return lrTensorReduceAxis source requestedAxis 'sum
     total: 0.0
     loop source\data 'item -> total: total + item
     return lrMakeTensor [] @[total]
 ]
 
 mean: function [value][
-    if is? :learnValue value -> return lrValueReduce value 'mean
+    requestedAxis: attr 'axis
+    if is? :learnValue value -> return lrValueReduce value 'mean requestedAxis
     source: lrAsTensor value
+    unless null? requestedAxis -> return lrTensorReduceAxis source requestedAxis 'mean
     if empty? source\data -> panic "learn: mean is undefined for an empty tensor"
     total: 0.0
     loop source\data 'item -> total: total + item
     return lrMakeTensor [] @[total / size source\data]
+]
+
+lrTensorReduceAxis: function [source requestedAxis operation][
+    rank: size source\shape
+    axis: lrNormalizeAxis requestedAxis rank
+    if and? [operation = 'mean][source\shape\[axis] = 0] ->
+        panic "learn: mean is undefined over an empty axis"
+    outputShape: lrFreshBlock
+    if rank > 1 [loop 0..(rank - 1) 'candidate [
+        unless candidate = axis -> 'outputShape ++ source\shape\[candidate]
+    ]]
+    outputData: lrFreshBlock
+    outputCount: lrCount outputShape
+    if outputCount > 0 [loop 1..outputCount 'unused -> 'outputData ++ 0.0]
+    if not? empty? source\data [loop 0..((size source\data) - 1) 'inputIndex [
+        coordinates: lrCoordinates source\shape inputIndex
+        outputCoordinates: lrFreshBlock
+        loop 0..(rank - 1) 'candidate [
+            unless candidate = axis -> 'outputCoordinates ++ coordinates\[candidate]
+        ]
+        outputIndex: lrFlatIndex outputShape outputCoordinates
+        set outputData outputIndex (outputData\[outputIndex] + source\data\[inputIndex])
+    ]]
+    if operation = 'mean [
+        divisor: source\shape\[axis]
+        outputData: map outputData 'item -> item / divisor
+    ]
+    return lrMakeTensor outputShape outputData
 ]
 
 square: function [value][
@@ -371,17 +483,22 @@ lrTensorString: function [value][
     dims: value\shape
     if empty? dims -> return to :string value\data\0
     if (size dims) = 1 -> return to :string value\data
-
-    rows: lrFreshBlock
-    cols: dims\1
-    if dims\0 > 0 [
-        loop 0..(dims\0 - 1) 'row [
-            values: lrFreshBlock
-            if cols > 0 [
-                loop 0..(cols - 1) 'col -> 'values ++ value\data\[(row * cols) + col]
+    if (size dims) = 2 [
+        rows: lrFreshBlock
+        cols: dims\1
+        if dims\0 > 0 [
+            loop 0..(dims\0 - 1) 'row [
+                rowValues: lrFreshBlock
+                if cols > 0 [
+                    loop 0..(cols - 1) 'col [
+                        offset: (row * cols) + col
+                        'rowValues ++ value\data\[offset]
+                    ]
+                ]
+                'rows ++ @[rowValues]
             ]
-            'rows ++ @[values]
         ]
+        return to :string rows
     ]
-    return to :string rows
+    return ~"tensor(shape: |dims|, data: |value\data|)"
 ]

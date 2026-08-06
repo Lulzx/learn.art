@@ -1,0 +1,13 @@
+import relative {../src/learn}!
+
+do [
+    volume: variable tensor [[[1 2] [3 4]] [[5 6] [7 8]]]
+    channelMeans: mean.axis: 1 volume
+    picked: tensorAt channelMeans [1 0]
+
+    backward picked
+
+    print shape channelMeans
+    print channelMeans
+    print gradient volume
+]

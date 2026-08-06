@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.7 combines a small tensor/autograd runtime with inspectable models, neural composition, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.8 combines arbitrary-rank tensors and autograd with inspectable models, neural composition, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -43,9 +43,9 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 
 - `tensor value`, `tensor.zeros shape`, `tensor.ones shape`, and `tensor.random shape`
 - overloaded `+`, `-`, `*`, `/`, `^`, and unary `neg`
-- `shape`, `reshape`, `transpose`, `square`, `tensorSum`, `mean`, and `matmul`
+- `shape`, `reshape`, `transpose`, `tensorAt`, `square`, `tensorSum`, `mean`, and `matmul`
 
-Tensors contain floating-point `data`, `shape`, and row-major `strides`. Only ranks 0–2 are accepted. Broadcasting aligns trailing dimensions and supports scalar, vector, and matrix operands. `tensorSum` is named explicitly because Arturo already owns the global `sum` word for blocks and ranges.
+Tensors contain owned floating-point `data`, inferred `shape`, and row-major `strides`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices. `matmul` remains deliberately rank-2.
 
 ## Autograd and models
 
@@ -81,4 +81,4 @@ arturo examples/regression.art
 arturo examples/native-cpu.art
 ```
 
-GPU execution, ranks above two, mixed dtypes, views, mutation APIs, and native backends remain outside the current milestone.
+GPU execution, mixed dtypes, slice views, mutation APIs, batched matrix multiplication, and additional native backends remain outside the current milestone.

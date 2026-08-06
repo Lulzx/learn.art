@@ -135,4 +135,36 @@ suite "graph transformations" [
         scheduledValue: scheduled\data\0
         assert -> 4.0 = scheduledValue
     ]
+
+    test "executes arbitrary-rank reductions and indexing" [
+        xNode: lrInputFrom tensor.zeros [2 2 2]
+        model: graph [
+            x: xNode
+            reduced: tensorSum.axis: 1 x
+            picked: tensorAt reduced [1 0]
+            result: square picked
+        ]
+        feed: #[x: tensor [[[1 2] [3 4]] [[5 6] [7 8]]]]
+        forward.with: feed model
+        eager: model\result\value
+        data: graphData model
+        schedule: scheduleGraph data 'result
+        cpu: executeCpu.with: feed schedule
+        assert -> eager\data = cpu\data
+        assert -> [144.0] = cpu\data
+    ]
+
+    test "keeps axis-sensitive operations distinct during CSE" [
+        xNode: lrInputFrom tensor.zeros [2 2]
+        model: graph [
+            x: xNode
+            columns: tensorSum.axis: 0 x
+            rows: tensorSum.axis: 1 x
+            total: columns + rows
+        ]
+        data: graphData model
+        deduplicated: eliminateCommonSubexpressions data
+        assert -> 'operation = deduplicated\nodes\columns\role
+        assert -> 'operation = deduplicated\nodes\rows\role
+    ]
 ]

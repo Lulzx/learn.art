@@ -202,6 +202,7 @@ lrGraphNodeData: function [model name][
         operation: item\operation
         shape: new item\value\shape
         parents: parentData
+        context: item\context
         value: (role = 'parameter)? -> lrTensorData item\value -> null
     ]
 ]

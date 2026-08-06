@@ -2,7 +2,7 @@
 
 `learn` has one execution path:
 
-1. Dense tensors store rank 0–2 floating-point values.
+1. Dense tensors store arbitrary-rank floating-point values in owned row-major blocks.
 2. Autograd nodes record tensor operations and local derivative rules.
 3. Graphs name nodes, parameters, and inputs.
 4. Optimizers update parameter data while preserving node identity.

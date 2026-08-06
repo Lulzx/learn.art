@@ -9,7 +9,7 @@ lrValueId: function [][
 ]
 
 define :learnValue [
-    init: constructor [id value gradient requiresGradient operation parents parameter]
+    init: constructor [id value gradient requiresGradient operation parents parameter context]
 
     add: method [that][lrValueBinary this that 'add]
     sub: method [that][lrValueBinary this that 'sub]
@@ -32,7 +32,7 @@ define :learnValue [
 ]
 
 lrMakeValue: function [spec][
-    args: lrArgs 7
+    args: lrArgs 8
     set args 0 lrValueId
     set args 1 lrAsTensor spec\value
     set args 2 null
@@ -40,6 +40,9 @@ lrMakeValue: function [spec][
     set args 4 spec\operation
     set args 5 spec\parents
     set args 6 spec\parameter
+    context: null
+    if key? spec 'context -> context: spec\context
+    set args 7 context
     return to :learnValue args
 ]
 
@@ -79,10 +82,19 @@ lrValueUnary: function [value operation][
     return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: operation parents: @[source] parameter: false]
 ]
 
-lrValueReduce: function [value operation][
+lrValueReduce: function [value operation requestedAxis][
     source: lrAsValue value
-    result: (operation = 'sum)? -> tensorSum source\value -> mean source\value
-    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: operation parents: @[source] parameter: false]
+    result: null
+    resultOperation: operation
+    context: null
+    if null? requestedAxis -> result: (operation = 'sum)? -> tensorSum source\value -> mean source\value
+    unless null? requestedAxis [
+        axis: lrNormalizeAxis requestedAxis (size source\value\shape)
+        result: (operation = 'sum)? -> tensorSum.axis: axis source\value -> mean.axis: axis source\value
+        resultOperation: (operation = 'sum)? -> 'sumAxis -> 'meanAxis
+        context: #[axis: axis]
+    ]
+    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: resultOperation parents: @[source] parameter: false context: context]
 ]
 
 lrValueReshape: function [value dims][
@@ -91,10 +103,23 @@ lrValueReshape: function [value dims][
     return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'reshape parents: @[source] parameter: false]
 ]
 
-lrValueTranspose: function [value][
+lrValueTranspose: function [value requestedAxes][
     source: lrAsValue value
-    result: transpose source\value
-    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'transpose parents: @[source] parameter: false]
+    axes: lrTransposeAxes source\value\shape requestedAxes
+    result: transpose.axes: axes source\value
+    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'transpose parents: @[source] parameter: false context: #[axes: axes]]
+]
+
+lrValueAt: function [value indices][
+    source: lrAsValue value
+    coordinates: indices
+    if and? [integer? indices][(size source\value\shape) = 1] -> coordinates: @[indices]
+    unless block? coordinates -> panic "learn: tensorAt expects an index block"
+    ; Validate and normalize negative indices now so recomputation is stable.
+    offset: lrFlatIndex source\value\shape coordinates
+    normalized: lrCoordinates source\value\shape offset
+    result: tensorAt source\value normalized
+    return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'index parents: @[source] parameter: false context: #[indices: normalized]]
 ]
 
 lrValueMatmul: function [left right][
@@ -125,6 +150,27 @@ lrUnbroadcast: function [value targetShape][
         ]
     ]
     return lrMakeTensor targetShape data
+]
+
+lrExpandReductionGradient: function [up sourceShape axis scale][
+    data: lrFreshBlock
+    count: lrCount sourceShape
+    if count > 0 [
+        loop 0..(count - 1) 'inputIndex [
+            coordinates: lrCoordinates sourceShape inputIndex
+            outputCoordinates: lrFreshBlock
+            loop 0..((size sourceShape) - 1) 'candidate [
+                unless candidate = axis -> 'outputCoordinates ++ coordinates\[candidate]
+            ]
+            outputShape: lrFreshBlock
+            loop 0..((size sourceShape) - 1) 'candidate [
+                unless candidate = axis -> 'outputShape ++ sourceShape\[candidate]
+            ]
+            outputIndex: lrFlatIndex outputShape outputCoordinates
+            'data ++ (up\data\[outputIndex] * scale)
+        ]
+    ]
+    return lrMakeTensor sourceShape data
 ]
 
 lrAccumulate: function [node contribution][
@@ -185,8 +231,11 @@ lrForwardNode: function [node][
     if op = 'pow -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'pow
     if op = 'sum -> node\value: tensorSum node\parents\0\value
     if op = 'mean -> node\value: mean node\parents\0\value
+    if op = 'sumAxis -> node\value: tensorSum.axis: node\context\axis node\parents\0\value
+    if op = 'meanAxis -> node\value: mean.axis: node\context\axis node\parents\0\value
     if op = 'reshape -> node\value: reshape node\parents\0\value node\value\shape
-    if op = 'transpose -> node\value: transpose node\parents\0\value
+    if op = 'transpose -> node\value: transpose.axes: node\context\axes node\parents\0\value
+    if op = 'index -> node\value: tensorAt node\parents\0\value node\context\indices
     if op = 'matmul -> node\value: matmul node\parents\0\value node\parents\1\value
     return null
 ]
@@ -305,9 +354,34 @@ backward: function [output][
             local: lrTensorBinary ones scale 'mul
             lrAccumulate node\parents\0 local
         ]
+        if op = 'sumAxis [
+            contribution: lrExpandReductionGradient up node\parents\0\value\shape node\context\axis 1.0
+            lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'meanAxis [
+            divisor: node\parents\0\value\shape\[node\context\axis]
+            contribution: lrExpandReductionGradient up node\parents\0\value\shape node\context\axis (1.0 / divisor)
+            lrAccumulate node\parents\0 contribution
+        ]
         if op = 'reshape ->
             lrAccumulate node\parents\0 (reshape up node\parents\0\value\shape)
-        if op = 'transpose -> lrAccumulate node\parents\0 (transpose up)
+        if op = 'transpose [
+            axes: node\context\axes
+            inverse: lrArgs (size axes)
+            if not? empty? axes [
+                loop 0..((size axes) - 1) 'outputAxis [
+                    sourceAxis: axes\[outputAxis]
+                    set inverse sourceAxis outputAxis
+                ]
+            ]
+            lrAccumulate node\parents\0 (transpose.axes: inverse up)
+        ]
+        if op = 'index [
+            contribution: lrZerosLike node\parents\0\value
+            offset: lrFlatIndex contribution\shape node\context\indices
+            set contribution\data offset up\data\0
+            lrAccumulate node\parents\0 contribution
+        ]
         if op = 'matmul [
             rightT: transpose node\parents\1\value
             leftT: transpose node\parents\0\value

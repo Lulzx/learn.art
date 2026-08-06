@@ -65,7 +65,9 @@ commonSubexpressions: function [data][
     loop data\order 'name [
         node: data\nodes\[name]
         if node\role = 'operation [
-            signature: to :string @[node\operation node\shape node\parents]
+            context: null
+            if key? node 'context -> context: node\context
+            signature: to :string @[node\operation node\shape node\parents context]
             names: lrFreshBlock
             if key? buckets signature -> names: new buckets\[signature]
             'names ++ name
@@ -109,18 +111,40 @@ lrExecuteDataNode: function [node parentValues][
     if operation = 'pow -> return lrTensorBinary parentValues\0 parentValues\1 'pow
     if operation = 'sum -> return tensorSum parentValues\0
     if operation = 'mean -> return mean parentValues\0
+    if operation = 'sumAxis [
+        axis: node\context\axis
+        source: parentValues\0
+        return tensorSum.axis: axis source
+    ]
+    if operation = 'meanAxis [
+        axis: node\context\axis
+        source: parentValues\0
+        return mean.axis: axis source
+    ]
     if operation = 'reshape -> return reshape parentValues\0 node\shape
-    if operation = 'transpose -> return transpose parentValues\0
+    if operation = 'transpose [
+        axes: node\context\axes
+        source: parentValues\0
+        return transpose.axes: axes source
+    ]
+    if operation = 'index [
+        source: parentValues\0
+        indices: node\context\indices
+        return tensorAt source indices
+    ]
     if operation = 'matmul -> return matmul parentValues\0 parentValues\1
     panic ~"learn: CPU backend does not support operation |operation|"
 ]
 
 lrNodeWithParents: function [node nextParents][
+    context: null
+    if key? node 'context -> context: node\context
     return #[
         role: node\role
         operation: node\operation
         shape: new node\shape
         parents: nextParents
+        context: context
         value: node\value
     ]
 ]
@@ -165,6 +189,7 @@ constantFold: function [data][
                     operation: 'constant
                     shape: new foldedValue\shape
                     parents: lrFreshBlock
+                    context: null
                     value: lrTensorData foldedValue
                 ]
                 set constants name foldedValue
@@ -192,7 +217,9 @@ eliminateCommonSubexpressions: function [data][
         nextNode: lrNodeWithParents node nextParents
 
         if node\role = 'operation [
-            signature: to :string @[node\operation node\shape nextParents]
+            context: null
+            if key? node 'context -> context: node\context
+            signature: to :string @[node\operation node\shape nextParents context]
             if key? signatures signature [
                 canonical: signatures\[signature]
                 set aliases name canonical
@@ -201,6 +228,7 @@ eliminateCommonSubexpressions: function [data][
                     operation: 'alias
                     shape: new node\shape
                     parents: @[canonical]
+                    context: null
                     value: null
                 ]
             ]
@@ -275,7 +303,7 @@ scheduleGraph: function [data outputName][
     ]
     return #[
         format: "learn.schedule"
-        version: "0.6"
+        version: "0.8"
         backend: 'cpu
         output: output
         graph: optimized
@@ -308,7 +336,10 @@ executeCpu: function [schedule][
             if contains? ['parameter 'constant] node\role -> value: lrTensorFromRecord node\value
             if or? [node\role = 'operation][node\role = 'alias] [
                 parentValues: lrFreshBlock
-                loop node\parents 'parent -> 'parentValues ++ @[lrParentValue environment parent]
+                loop node\parents 'parent [
+                    parentValue: lrParentValue environment parent
+                    'parentValues ++ @[parentValue]
+                ]
                 value: lrExecuteDataNode node parentValues
             ]
             if null? value -> panic ~"learn: CPU backend cannot load node |name|"

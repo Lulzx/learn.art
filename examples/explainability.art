@@ -1,0 +1,22 @@
+import relative {../src/learn}!
+
+minusThree: 0.0 - 3.0
+weights: tensor @[2.0 minusThree]
+
+model: graph [
+    features: inputShape [2]
+    weight: parameter weights
+    weighted: features * weight
+    score: tensorSum weighted
+]
+
+values: tensor [4.0 5.0]
+feed: #[features: values]
+gradient: inputGradient.input: 'features.output: 'score model feed
+importance: saliency.input: 'features.output: 'score model feed
+attribution: integratedGradients.steps: 32.input: 'features.output: 'score model feed
+
+print ~"input gradient: |gradient|"
+print ~"saliency: |importance|"
+print ~"integrated gradients: |attribution|"
+print ~"attribution sum: |attribution\data\0 + attribution\data\1|"

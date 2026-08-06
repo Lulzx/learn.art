@@ -1,0 +1,87 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "gradient explainability" [
+    test "computes named scalar-output input gradients" [
+        minusThree: 0.0 - 3.0
+        weights: tensor @[2.0 minusThree]
+        model: graph [
+            features: inputShape [2]
+            weight: parameter weights
+            product: features * weight
+            score: tensorSum product
+        ]
+        values: tensor [4.0 5.0]
+        feed: #[features: values]
+        grad: inputGradient.input: 'features.output: 'score model feed
+        assert -> 2.0 = grad\data\0
+        assert -> (0.0 - 3.0) = grad\data\1
+    ]
+
+    test "selects one element of a vector output" [
+        weights: tensor [2.0 3.0]
+        model: graph [x: inputShape [2] weight: parameter weights output: x * weight]
+        values: tensor [4.0 5.0]
+        grad: inputGradient.output: 'output.index: 1 model #[x: values]
+        assert -> [0.0 3.0] = grad\data
+    ]
+
+    test "returns absolute saliency" [
+        minusThree: 0.0 - 3.0
+        weights: tensor @[2.0 minusThree]
+        model: graph [x: inputShape [2] weight: parameter weights product: x * weight output: tensorSum product]
+        values: tensor [4.0 5.0]
+        result: saliency.output: 'output model #[x: values]
+        assert -> [2.0 3.0] = result\data
+    ]
+
+    test "integrates linear gradients from a zero baseline" [
+        minusThree: 0.0 - 3.0
+        weights: tensor @[2.0 minusThree]
+        model: graph [x: inputShape [2] weight: parameter weights product: x * weight output: tensorSum product]
+        values: tensor [4.0 5.0]
+        attribution: integratedGradients.steps: 16.output: 'output model #[x: values]
+        total: attribution\data\0 + attribution\data\1
+        assert -> 8.0 = attribution\data\0
+        assert -> (0.0 - 15.0) = attribution\data\1
+        assert -> (0.0 - 7.0) = total
+    ]
+
+    test "supports a custom baseline" [
+        weights: tensor [2.0 3.0]
+        model: graph [x: inputShape [2] weight: parameter weights product: x * weight output: tensorSum product]
+        values: tensor [4.0 5.0]
+        baseline: tensor [1.0 1.0]
+        attribution: integratedGradients.steps: 8.baseline: baseline.output: 'output model #[x: values]
+        assert -> [6.0 12.0] = attribution\data
+    ]
+
+    test "preserves graph mode and existing gradients" [
+        model: graph [
+            x: inputShape [2]
+            weight: parameter tensor [2.0 3.0]
+            dropped: dropout.rate: 0.5.seed: 5 x
+            product: dropped * weight
+            output: tensorSum product
+        ]
+        savedGradient: tensor [9.0 8.0]
+        model\weight\gradient: savedGradient
+        values: tensor [1.0 1.0]
+        grad: inputGradient.output: 'output model #[x: values]
+        assert -> trainingMode? model
+        assert -> [2.0 3.0] = grad\data
+        assert -> [9.0 8.0] = model\weight\gradient\data
+    ]
+
+    test "validates attribution configuration" [
+        model: graph [x: inputShape [2] output: x * 2.0]
+        values: tensor [1.0 2.0]
+        missingIndex?: throws? [inputGradient.output: 'output model #[x: values]]
+        invalidSteps?: throws? [integratedGradients.steps: 0.output: 'output.index: 0 model #[x: values]]
+        badBaseline: tensor [0.0]
+        baselineMismatch?: throws? [integratedGradients.baseline: badBaseline.output: 'output.index: 0 model #[x: values]]
+        assert -> missingIndex?
+        assert -> invalidSteps?
+        assert -> baselineMismatch?
+    ]
+]

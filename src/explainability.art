@@ -1,0 +1,96 @@
+; Named-output gradient attribution without contaminating training state.
+
+import relative {./model}!
+
+lrExplainSpec: function [model callAttrs][
+    unless is? :learnGraph model -> panic "learn: explainability expects a graph"
+    if empty? model\inputList -> panic "learn: explainability graph has no inputs"
+    inputName: model\inputList\0
+    outputName: last model\names
+    selectedIndex: null
+    if key? callAttrs 'input -> inputName: to :literal callAttrs\input
+    if key? callAttrs 'output -> outputName: to :literal callAttrs\output
+    if key? callAttrs 'index -> selectedIndex: callAttrs\index
+    unless contains? model\inputList inputName -> panic ~"learn: graph has no explainability input named |inputName|"
+    unless key? model\values outputName -> panic ~"learn: graph has no explainability output named |outputName|"
+    unless is? :learnValue model\values\[outputName] -> panic "learn: explainability output must be differentiable"
+    return #[input: inputName output: outputName index: selectedIndex]
+]
+
+lrGradientCopy: function [value][
+    if null? value -> return null
+    return lrMakeTensorOn value\shape value\data value\device
+]
+
+lrInputGradient: function [model feed spec][
+    unless dictionary? feed -> panic "learn: explainability feed must be a dictionary"
+    unless key? feed spec\input -> panic ~"learn: explainability feed is missing |spec\input|"
+    wasTraining: trainingMode? model
+    evalMode model
+    forward.with: feed model
+    selected: model\values\[spec\output]
+    if null? spec\index [unless (size selected\value\data) = 1 -> panic "learn: non-scalar explainability output requires .index"]
+    unless null? spec\index -> selected: tensorAt selected spec\index
+
+    topoOrder: lrTopo selected
+    snapshots: lrFreshBlock
+    loop topoOrder 'node [
+        savedGradient: lrGradientCopy node\gradient
+        'snapshots ++ @[#[node: node requiresGradient: node\requiresGradient gradient: savedGradient]]
+        node\requiresGradient: true
+        node\gradient: null
+    ]
+    backward selected
+    inputNode: model\values\[spec\input]
+    if null? inputNode\gradient -> panic "learn: selected output does not depend on the requested input"
+    result: lrGradientCopy inputNode\gradient
+    loop snapshots 'snapshot [
+        snapshot\node\requiresGradient: snapshot\requiresGradient
+        snapshot\node\gradient: snapshot\gradient
+    ]
+    if wasTraining -> trainMode model
+    unless wasTraining -> evalMode model
+    return result
+]
+
+inputGradient: function [model feed][
+    callAttrs: attrs
+    spec: lrExplainSpec model callAttrs
+    return lrInputGradient model feed spec
+]
+
+saliency: function [model feed][
+    callAttrs: attrs
+    spec: lrExplainSpec model callAttrs
+    raw: lrInputGradient model feed spec
+    return tensorAbs raw
+]
+
+integratedGradients: function [model feed][
+    callAttrs: attrs
+    spec: lrExplainSpec model callAttrs
+    steps: 32
+    if key? callAttrs 'steps -> steps: callAttrs\steps
+    unless and? [integer? steps][steps > 0] -> panic "learn: integratedGradients.steps must be positive"
+    unless dictionary? feed -> panic "learn: integratedGradients feed must be a dictionary"
+    unless key? feed spec\input -> panic ~"learn: explainability feed is missing |spec\input|"
+    source: lrAsTensor feed\[spec\input]
+    baseline: lrZerosLike source
+    if key? callAttrs 'baseline -> baseline: lrAsTensor callAttrs\baseline
+    unless baseline\shape = source\shape -> panic "learn: integrated-gradients baseline shape does not match input"
+    unless baseline\device = source\device -> panic "learn: integrated-gradients baseline device does not match input"
+    delta: lrTensorBinary source baseline 'sub
+    total: lrZerosLike source
+    loop 1..steps 'stepIndex [
+        alpha: (to :floating stepIndex) / steps
+        scaledDelta: lrTensorBinary delta alpha 'mul
+        stepInput: lrTensorBinary baseline scaledDelta 'add
+        stepFeed: lrFreshDictionary
+        loop keys feed 'name -> set stepFeed name feed\[name]
+        set stepFeed spec\input stepInput
+        contribution: lrInputGradient model stepFeed spec
+        total: lrTensorBinary total contribution 'add
+    ]
+    average: lrTensorBinary total (1.0 / steps) 'mul
+    return lrTensorBinary delta average 'mul
+]

@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.22 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass telemetry, deterministic model composition, portable inference artifacts, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.23 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass telemetry, deterministic model composition, portable inference, gradient explainability, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -114,6 +114,12 @@ Dense layers use Xavier initialization with seed `0` by default; pass `denseLaye
 
 `saveInference` and `loadInference` package graph architecture, parameters, selected output, and optional preprocessing behind header `10022`. A recursive tagged codec preserves strings, literals, numbers, logicals, nulls, blocks, and dictionaries as parsed data; artifact files are never evaluated as Arturo code.
 
+## Explainability
+
+`inputGradient.input:.output:` differentiates a named scalar graph output with respect to a named input feed; add `.index:` for one element of a vector or matrix output. `saliency` returns its absolute value. Both run in evaluation mode and restore the graph's prior mode and gradients afterward.
+
+`integratedGradients.steps:.baseline:` averages those gradients along the straight-line path from a zero or supplied baseline and multiplies by the input delta. It uses the same named input/output and indexed-output attributes and leaves training state intact.
+
 ## Graph transformations
 
 `validateGraphData`, `deadCodeEliminate`, `commonSubexpressions`, and `optimizeGraph` analyze or rewrite the plain dictionary returned by `graphData`. `graphDot` exports the same representation for Graphviz visualization. These passes preserve the live eager graph and make lazy execution work explicit at the data boundary.
@@ -139,6 +145,7 @@ arturo examples/composition.art
 arturo examples/initialization.art
 arturo examples/metrics.art
 arturo examples/inference.art
+arturo examples/explainability.art
 arturo examples/native-cpu.art
 ```
 

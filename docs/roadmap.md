@@ -22,7 +22,8 @@
 - v0.20: local seeded Xavier/He/uniform initialization, reset APIs, and repeatable initializer metadata.
 - v0.21: confusion matrices, per-class and macro reports, and mergeable streaming classification meters.
 - v0.22: immutable executable inference snapshots with optional preprocessing and a safe portable artifact codec.
+- v0.23: named input gradients, indexed saliency, and baseline-integrated gradients with state restoration.
 
 ## Next
 
-The next coherent milestone is gradient-based explainability: input gradients, saliency maps, and integrated gradients over named graph outputs.
+The next coherent milestone is model calibration: top-k predictions, reliability bins, expected calibration error, and temperature scaling.

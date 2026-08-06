@@ -19,7 +19,8 @@
 - v0.17: stable softmax and cross entropy, shaped inputs, class prediction, and multiclass accuracy.
 - v0.18: seeded inverted dropout, explicit train/eval mode, resumable regularization state, and L1/L2 penalties.
 - v0.19: reusable dense layers, nested parameter discovery, named groups, and resumable selective freezing.
+- v0.20: local seeded Xavier/He/uniform initialization, reset APIs, and repeatable initializer metadata.
 
 ## Next
 
-The next coherent milestone is reproducible initialization: seeded Xavier/He strategies, parameter reset APIs, and initializer metadata for repeatable model construction.
+The next coherent milestone is evaluation telemetry: confusion matrices, per-class precision/recall/F1, and mergeable streaming metrics for validation loops.

@@ -230,20 +230,56 @@ denseLayer: function [inputSize outputSize][
     callAttrs: attrs
     name: 'dense
     makeZeros: key? callAttrs 'zeros
+    initializerSpec: initializer 'xavier
     if key? callAttrs 'name -> name: to :literal callAttrs\name
+    if key? callAttrs 'initializer -> initializerSpec: callAttrs\initializer
+    if and? [makeZeros][key? callAttrs 'initializer] -> panic "learn: denseLayer cannot combine .zeros and .initializer"
     unless and? [integer? inputSize][inputSize > 0] -> panic "learn: denseLayer input size must be positive"
     unless and? [integer? outputSize][outputSize > 0] -> panic "learn: denseLayer output size must be positive"
+    unless is? :learnInitializer initializerSpec -> panic "learn: denseLayer.initializer expects an initializer"
     weightName: to :literal ~"|name|_weight"
     biasName: to :literal ~"|name|_bias"
-    weight: (makeZeros)? -> parameter.zeros @[inputSize outputSize] -> parameter.random @[inputSize outputSize]
+    weightShape: @[inputSize outputSize]
+    weightTensor: (makeZeros)? -> tensor.zeros weightShape -> initializeTensor initializerSpec weightShape
+    weight: parameter weightTensor
     bias: parameter.zeros @[outputSize]
-    weight\context: #[parameterName: weightName group: name trainable: true]
+    weightInitializer: initializerSpec
+    if makeZeros -> weightInitializer: initializer 'zeros
+    weight\context: #[parameterName: weightName group: name trainable: true initializer: initializerState weightInitializer]
     bias\context: #[parameterName: biasName group: name trainable: true]
     args: lrArgs 3
     set args 0 name
     set args 1 weight
     set args 2 bias
     return to :learnDenseLayer args
+]
+
+resetParameter: function [parameterValue initializerSpec][
+    unless and? [is? :learnValue parameterValue][parameterValue\parameter] -> panic "learn: resetParameter expects a parameter"
+    unless is? :learnInitializer initializerSpec -> panic "learn: resetParameter expects an initializer"
+    initialized: initializeTensor initializerSpec parameterValue\value\shape
+    parameterValue\value\data: new initialized\data
+    parameterValue\gradient: null
+    if null? parameterValue\context -> parameterValue\context: #[parameterName: 'parameter group: 'default trainable: true]
+    parameterValue\context\initializer: initializerState initializerSpec
+    return parameterValue
+]
+
+resetLayer: function [layer initializerSpec][
+    unless is? :learnDenseLayer layer -> panic "learn: resetLayer expects a layer"
+    resetParameter layer\weight initializerSpec
+    zeroInitializer: initializer 'zeros
+    resetParameter layer\bias zeroInitializer
+    return layer
+]
+
+resetParameters: function [target initializerSpec][
+    items: target
+    if is? :learnGraph target -> items: parameters target
+    if is? :learnDenseLayer target -> return resetLayer target initializerSpec
+    unless block? items -> panic "learn: resetParameters expects a graph, layer, or parameter block"
+    loop items 'item -> resetParameter item initializerSpec
+    return target
 ]
 
 applyLayer: function [layer inputValue][

@@ -29,6 +29,88 @@ define :learnTensor [
     string: method [][lrTensorString this]
 ]
 
+define :learnInitializer [
+    init: constructor [kind seed low high]
+]
+
+initializer: function [requestedKind][
+    callAttrs: attrs
+    kind: to :literal requestedKind
+    seed: 0
+    low: 0.0 - 0.05
+    high: 0.05
+    if key? callAttrs 'seed -> seed: callAttrs\seed
+    if key? callAttrs 'low -> low: callAttrs\low
+    if key? callAttrs 'high -> high: callAttrs\high
+    unless contains? ['xavier 'he 'uniform 'zeros] kind -> panic ~"learn: unsupported initializer |kind|"
+    unless and? [integer? seed][seed >= 0] -> panic "learn: initializer seed must be a non-negative integer"
+    unless and? [lrNumeric? low][lrNumeric? high] -> panic "learn: initializer bounds must be numeric"
+    unless low < high -> panic "learn: initializer low bound must be below high bound"
+    args: lrArgs 4
+    set args 0 kind
+    set args 1 seed
+    set args 2 to :floating low
+    set args 3 to :floating high
+    return to :learnInitializer args
+]
+
+initializerState: function [spec][
+    unless is? :learnInitializer spec -> panic "learn: initializerState expects an initializer"
+    return #[format: "learn.initializer-state" version: "0.20" kind: spec\kind seed: spec\seed low: spec\low high: spec\high]
+]
+
+initializerFromState: function [state][
+    unless and? [dictionary? state][and? [key? state 'format][state\format = "learn.initializer-state"]] -> panic "learn: unsupported initializer state format"
+    unless and? [key? state 'version][state\version = "0.20"] -> panic "learn: unsupported initializer state version"
+    loop ['kind 'seed 'low 'high] 'field [unless key? state field -> panic ~"learn: initializer state is missing |field|"]
+    return initializer.seed: state\seed.low: state\low.high: state\high state\kind
+]
+
+lrInitializerFans: function [dims][
+    lrValidateShape dims
+    if empty? dims -> panic "learn: fan initializer requires a non-scalar shape"
+    rank: size dims
+    fanIn: dims\0
+    fanOut: (rank = 1)? -> dims\0 -> last dims
+    if rank > 2 [
+        receptive: 1
+        loop 1..(rank - 2) 'axis -> receptive: receptive * dims\[axis]
+        fanIn: fanIn * receptive
+        fanOut: fanOut * receptive
+    ]
+    unless and? [fanIn > 0][fanOut > 0] -> panic "learn: fan initializer requires positive dimensions"
+    return @[fanIn fanOut]
+]
+
+lrInitializerBounds: function [spec dims][
+    if spec\kind = 'uniform -> return @[spec\low spec\high]
+    if spec\kind = 'zeros -> return @[0.0 0.0]
+    fans: lrInitializerFans dims
+    limit: 0.0
+    if spec\kind = 'xavier -> limit: (6.0 / (fans\0 + fans\1)) ^ 0.5
+    if spec\kind = 'he -> limit: (6.0 / fans\0) ^ 0.5
+    return @[0.0 - limit limit]
+]
+
+initializeTensor: function [spec dims][
+    unless is? :learnInitializer spec -> panic "learn: initializeTensor expects an initializer"
+    lrValidateShape dims
+    bounds: lrInitializerBounds spec dims
+    count: lrCount dims
+    data: lrFreshBlock
+    state: spec\seed + 1
+    if count > 0 [loop 1..count 'unused [
+        value: 0.0
+        unless spec\kind = 'zeros [
+            state: ((state * 1103515245) + 12345) % 2147483648
+            fraction: (to :floating state) / 2147483648.0
+            value: bounds\0 + (fraction * (bounds\1 - bounds\0))
+        ]
+        'data ++ value
+    ]]
+    return lrMakeTensor dims data
+]
+
 lrNumeric?: function [value][
     return or? [integer? value][floating? value]
 ]

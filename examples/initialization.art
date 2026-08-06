@@ -1,0 +1,16 @@
+import relative {../src/learn}!
+
+encoderInit: initializer.seed: 10 'he
+headInit: initializer.seed: 11 'xavier
+
+firstEncoder: denseLayer.name: "first_encoder".initializer: encoderInit 4 8
+matchingEncoder: denseLayer.name: "matching_encoder".initializer: encoderInit 4 8
+head: denseLayer.name: "head".initializer: headInit 8 3
+
+print ~"same seed is repeatable: |firstEncoder\weight\value\data = matchingEncoder\weight\value\data|"
+print ~"encoder initializer: |firstEncoder\weight\context\initializer|"
+print ~"head initializer: |head\weight\context\initializer|"
+
+zeros: initializer 'zeros
+resetLayer head zeros
+print ~"reset head weight: |head\weight|"

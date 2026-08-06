@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.19 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass learning, reusable layers and selective freezing, executable schedules, and optional native CPU fusion kernels.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.20 combines arbitrary-rank, device-aware tensors and autograd with generalized linear algebra, controlled and resumable training, fitted preprocessing, multiclass learning, reusable layers, deterministic initialization, executable schedules, and optional native CPU fusion kernels.
 
 ## Example
 
@@ -96,6 +96,12 @@ A graph evaluates its labeled block once to establish the operation DAG. `input`
 
 `parameterGroups model` groups parameters by layer name; `parameters.group:` selects a group and `trainableParameters` filters frozen values. Use `freezeParameters`/`unfreezeParameters` for a layer, graph, or parameter block and `freezeGroup`/`unfreezeGroup` for graph-owned groups. Optimizers retain frozen slots but skip updates. `trainabilityState` is included automatically in v0.19 session checkpoints.
 
+## Initialization
+
+`initializer.seed:` constructs a local deterministic `xavier`, `he`, `uniform`, or `zeros` strategy. `initializeTensor spec shape` never touches Arturo's global random stream. Initializer state is ordinary v0.20 data and round-trips through `initializerState`/`initializerFromState`.
+
+Dense layers use Xavier initialization with seed `0` by default; pass `denseLayer.initializer:` with explicit, distinct seeds when same-shaped layers need independent streams. `resetParameter`, `resetLayer`, and `resetParameters` regenerate values from a strategy, clear stale gradients, and retain initializer metadata.
+
 ## Graph transformations
 
 `validateGraphData`, `deadCodeEliminate`, `commonSubexpressions`, and `optimizeGraph` analyze or rewrite the plain dictionary returned by `graphData`. `graphDot` exports the same representation for Graphviz visualization. These passes preserve the live eager graph and make lazy execution work explicit at the data boundary.
@@ -118,6 +124,7 @@ arturo examples/preprocessing.art
 arturo examples/multiclass.art
 arturo examples/regularization.art
 arturo examples/composition.art
+arturo examples/initialization.art
 arturo examples/native-cpu.art
 ```
 

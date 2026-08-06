@@ -1,0 +1,96 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "reproducible initialization" [
+    test "repeats local seeded initializer streams" [
+        firstSpec: initializer.seed: 42 'xavier
+        matchingSpec: initializer.seed: 42 'xavier
+        differentSpec: initializer.seed: 43 'xavier
+        firstTensor: initializeTensor firstSpec [2 3]
+        matchingTensor: initializeTensor matchingSpec [2 3]
+        differentTensor: initializeTensor differentSpec [2 3]
+        assert -> firstTensor\data = matchingTensor\data
+        assert -> not? firstTensor\data = differentTensor\data
+        assert -> [2 3] = firstTensor\shape
+    ]
+
+    test "applies Xavier and He fan bounds" [
+        xavier: initializer.seed: 7 'xavier
+        he: initializer.seed: 7 'he
+        xavierTensor: initializeTensor xavier [2 3]
+        heTensor: initializeTensor he [2 3]
+        xavierLimit: (6.0 / 5.0) ^ 0.5
+        heLimit: (6.0 / 2.0) ^ 0.5
+        loop xavierTensor\data 'item -> assert -> and? [item >= (0.0 - xavierLimit)][item =< xavierLimit]
+        loop heTensor\data 'item -> assert -> and? [item >= (0.0 - heLimit)][item =< heLimit]
+    ]
+
+    test "supports explicit uniform and zero initializers" [
+        uniform: initializer.seed: 9.low: 2.0.high: 3.0 'uniform
+        zeros: initializer 'zeros
+        uniformTensor: initializeTensor uniform [4]
+        zeroTensor: initializeTensor zeros [2 2]
+        loop uniformTensor\data 'item -> assert -> and? [item >= 2.0][item < 3.0]
+        assert -> [0.0 0.0 0.0 0.0] = zeroTensor\data
+    ]
+
+    test "round-trips ordinary initializer state" [
+        spec: initializer.seed: 17.low: 0.2.high: 0.8 'uniform
+        state: initializerState spec
+        restored: initializerFromState state
+        expected: initializeTensor spec [5]
+        actual: initializeTensor restored [5]
+        assert -> "learn.initializer-state" = state\format
+        assert -> expected\data = actual\data
+    ]
+
+    test "constructs repeatable dense layers with metadata" [
+        spec: initializer.seed: 21 'he
+        firstLayer: denseLayer.initializer: spec.name: "first" 3 2
+        secondLayer: denseLayer.initializer: spec.name: "second" 3 2
+        assert -> firstLayer\weight\value\data = secondLayer\weight\value\data
+        assert -> 'he = firstLayer\weight\context\initializer\kind
+        assert -> 21 = firstLayer\weight\context\initializer\seed
+        assert -> [0.0 0.0] = firstLayer\bias\value\data
+    ]
+
+    test "resets parameters and clears stale gradients" [
+        parameterValue: parameter.zeros [2]
+        parameterValue\gradient: tensor [4.0 5.0]
+        spec: initializer.seed: 3.low: 1.0.high: 2.0 'uniform
+        resetParameter parameterValue spec
+        expected: initializeTensor spec [2]
+        assert -> expected\data = parameterValue\value\data
+        assert -> null? parameterValue\gradient
+        assert -> 'uniform = parameterValue\context\initializer\kind
+    ]
+
+    test "resets layers and graph parameter collections" [
+        layer: denseLayer.zeros.name: "reset" 2 1
+        spec: initializer.seed: 8 'xavier
+        resetLayer layer spec
+        expectedWeight: initializeTensor spec [2 1]
+        assert -> expectedWeight\data = layer\weight\value\data
+        assert -> [0.0] = layer\bias\value\data
+
+        model: graph [x: inputShape [1 2] output: applyLayer layer x loss: mean output]
+        zeros: initializer 'zeros
+        resetParameters model zeros
+        assert -> [0.0 0.0] = layer\weight\value\data
+        assert -> [0.0] = layer\bias\value\data
+    ]
+
+    test "validates initializer configuration" [
+        badKind?: throws? [initializer 'unknown]
+        badSeed?: throws? [initializer.seed: (0 - 1) 'xavier]
+        badBounds?: throws? [initializer.low: 2.0.high: 1.0 'uniform]
+        scalarFan?: throws? [initializeTensor (initializer 'he) lrFreshBlock]
+        spec: initializer 'xavier
+        conflictingLayer?: throws? [denseLayer.zeros.initializer: spec 1 1]
+        assert -> badKind?
+        assert -> badSeed?
+        assert -> badBounds?
+        assert -> scalarFan?
+        assert -> conflictingLayer?
+    ]
+]

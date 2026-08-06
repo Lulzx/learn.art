@@ -15,6 +15,19 @@ lrVectorData: function [value label][
     panic ~"learn: |label| must be a vector or a one-column matrix"
 ]
 
+lrMatrixData: function [value label][
+    source: lrAsTensor value
+    rank: size source\shape
+    if rank = 2 -> return source
+    if rank = 1 -> return reshape source @[source\shape\0 1]
+    panic ~"learn: |label| must be a vector or matrix"
+]
+
+dense: function [inputValue weight bias][
+    linearValue: matmul inputValue weight
+    return linearValue + bias
+]
+
 lrInputFrom: function [value][
     return lrMakeValue #[
         value: lrAsTensor value
@@ -39,18 +52,21 @@ fit: function [features targets][
     callAttrs: attrs
     linearMode: key? callAttrs 'linear
     logisticMode: key? callAttrs 'logistic
-    unless or? [linearMode][logisticMode] ->
-        panic "learn: fit requires .linear or .logistic"
+    mlpMode: key? callAttrs 'mlp
+    unless or? [linearMode][or? [logisticMode][mlpMode]] ->
+        panic "learn: fit requires .linear, .logistic, or .mlp"
 
     epochs: 200
     rate: 0.05
     if key? callAttrs 'epochs -> epochs: callAttrs\epochs
     if key? callAttrs 'rate -> rate: callAttrs\rate
+    if and? [mlpMode][not? key? callAttrs 'rate] -> rate: 0.01
     unless and? [integer? epochs][epochs > 0] -> panic "learn: epochs must be a positive integer"
 
-    xTrain: lrVectorData features "features"
-    yTrain: lrVectorData targets "targets"
-    unless xTrain\shape = yTrain\shape -> panic "learn: features and targets must have equal length"
+    xTrain: (mlpMode)? -> lrMatrixData features "features" -> lrVectorData features "features"
+    yTrain: (mlpMode)? -> lrMatrixData targets "targets" -> lrVectorData targets "targets"
+    unless xTrain\shape\0 = yTrain\shape\0 -> panic "learn: features and targets must have equal rows"
+    unless mlpMode [unless xTrain\shape = yTrain\shape -> panic "learn: features and targets must have equal length"]
 
     xNode: lrInputFrom xTrain
     yNode: lrInputFrom yTrain
@@ -85,7 +101,29 @@ fit: function [features targets][
         ]
     ]
 
-    optimizer: sgd.rate: rate (parameters model)
+    if mlpMode [
+        kind: 'mlp
+        hiddenSize: 4
+        if key? callAttrs 'hidden -> hiddenSize: callAttrs\hidden
+        unless and? [integer? hiddenSize][hiddenSize > 0] -> panic "learn: hidden size must be positive"
+        inputWidth: xTrain\shape\1
+        outputWidth: yTrain\shape\1
+        model: graph [
+            x: xNode
+            y: yNode
+            w1: parameter.random @[inputWidth hiddenSize]
+            b1: parameter.zeros @[hiddenSize]
+            hiddenLinear: dense x w1 b1
+            hidden: tensorTanh hiddenLinear
+            w2: parameter.random @[hiddenSize outputWidth]
+            b2: parameter.zeros @[outputWidth]
+            prediction: dense hidden w2 b2
+            residual: prediction - y
+            loss: mean square residual
+        ]
+    ]
+
+    optimizer: (mlpMode)? -> adam.rate: rate (parameters model) -> sgd.rate: rate (parameters model)
     feed: #[x: xTrain y: yTrain]
     fittedEstimator: #[estimator: true kind: kind model: model]
     remainingEpochs: epochs
@@ -103,7 +141,7 @@ fit: function [features targets][
 predict: function [estimator features][
     callAttrs: attrs
     unless and? [dictionary? estimator][key? estimator 'estimator] -> panic "learn: predict expects a fitted estimator"
-    x: lrVectorData features "features"
+    x: (estimator\kind = 'mlp)? -> lrMatrixData features "features" -> lrVectorData features "features"
     feed: lrFreshDictionary
     set feed 'x x
     forward.with: feed estimator\model

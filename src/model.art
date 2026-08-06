@@ -20,6 +20,14 @@ define :learnSgd [
     string: method [][~"SGD(rate: |this\rate|, parameters: |size this\parameterList|)"]
 ]
 
+define :learnMomentum [
+    init: constructor [parameterList rate beta velocities]
+]
+
+define :learnAdam [
+    init: constructor [parameterList rate beta1 beta2 epsilon firstMoments secondMoments timestep]
+]
+
 ; `input` intentionally replaces Arturo's terminal-input word after import.
 ; In a graph block it constructs a symbolic, initially scalar placeholder.
 input: function [][
@@ -245,13 +253,106 @@ sgd: function [parameterList][
     return to :learnSgd args
 ]
 
+lrValidateParameters: function [parameterList][
+    loop parameterList 'item [
+        unless and? [is? :learnValue item][item\parameter] ->
+            panic "learn: optimizer expects parameter values"
+    ]
+    return parameterList
+]
+
+momentum: function [parameterList][
+    callAttrs: attrs
+    rate: 0.01
+    beta: 0.9
+    if key? callAttrs 'rate -> rate: callAttrs\rate
+    if key? callAttrs 'beta -> beta: callAttrs\beta
+    unless and? [lrNumeric? rate][rate > 0.0] -> panic "learn: momentum rate must be positive"
+    unless and? [lrNumeric? beta][and? [beta >= 0.0][beta < 1.0]] -> panic "learn: momentum beta must be in [0, 1)"
+    lrValidateParameters parameterList
+    velocities: lrFreshBlock
+    loop parameterList 'item -> 'velocities ++ lrZerosLike item\value
+    args: lrArgs 4
+    set args 0 parameterList
+    set args 1 to :floating rate
+    set args 2 to :floating beta
+    set args 3 velocities
+    return to :learnMomentum args
+]
+
+adam: function [parameterList][
+    callAttrs: attrs
+    rate: 0.001
+    beta1: 0.9
+    beta2: 0.999
+    epsilon: 0.00000001
+    if key? callAttrs 'rate -> rate: callAttrs\rate
+    if key? callAttrs 'beta1 -> beta1: callAttrs\beta1
+    if key? callAttrs 'beta2 -> beta2: callAttrs\beta2
+    if key? callAttrs 'epsilon -> epsilon: callAttrs\epsilon
+    unless and? [lrNumeric? rate][rate > 0.0] -> panic "learn: Adam rate must be positive"
+    lrValidateParameters parameterList
+    firstMoments: lrFreshBlock
+    secondMoments: lrFreshBlock
+    loop parameterList 'item [
+        'firstMoments ++ lrZerosLike item\value
+        'secondMoments ++ lrZerosLike item\value
+    ]
+    args: lrArgs 8
+    set args 0 parameterList
+    set args 1 to :floating rate
+    set args 2 to :floating beta1
+    set args 3 to :floating beta2
+    set args 4 to :floating epsilon
+    set args 5 firstMoments
+    set args 6 secondMoments
+    set args 7 0
+    return to :learnAdam args
+]
+
 step: function [optimizer][
-    unless is? :learnSgd optimizer -> panic "learn: step expects an SGD optimizer"
-    loop optimizer\parameterList 'item [
+    supported: or? [is? :learnSgd optimizer][or? [is? :learnMomentum optimizer][is? :learnAdam optimizer]]
+    unless supported -> panic "learn: step expects an optimizer"
+
+    if is? :learnAdam optimizer -> optimizer\timestep: optimizer\timestep + 1
+    itemCount: size optimizer\parameterList
+    if itemCount > 0 [loop 0..(itemCount - 1) 'i [
+        item: optimizer\parameterList\[i]
         if null? item\gradient -> panic "learn: cannot step a parameter without a gradient"
-        update: lrTensorBinary item\gradient optimizer\rate 'mul
+        update: null
+
+        if is? :learnSgd optimizer -> update: lrTensorBinary item\gradient optimizer\rate 'mul
+        if is? :learnMomentum optimizer [
+            oldVelocity: optimizer\velocities\[i]
+            retained: lrTensorBinary oldVelocity optimizer\beta 'mul
+            velocity: lrTensorBinary retained item\gradient 'add
+            set optimizer\velocities i velocity
+            update: lrTensorBinary velocity optimizer\rate 'mul
+        ]
+        if is? :learnAdam optimizer [
+            oldFirst: optimizer\firstMoments\[i]
+            oldSecond: optimizer\secondMoments\[i]
+            retainedFirst: lrTensorBinary oldFirst optimizer\beta1 'mul
+            newFirstPart: lrTensorBinary item\gradient (1.0 - optimizer\beta1) 'mul
+            firstMoment: lrTensorBinary retainedFirst newFirstPart 'add
+            gradientSquare: lrTensorBinary item\gradient 2.0 'pow
+            retainedSecond: lrTensorBinary oldSecond optimizer\beta2 'mul
+            newSecondPart: lrTensorBinary gradientSquare (1.0 - optimizer\beta2) 'mul
+            secondMoment: lrTensorBinary retainedSecond newSecondPart 'add
+            set optimizer\firstMoments i firstMoment
+            set optimizer\secondMoments i secondMoment
+            firstCorrection: 1.0 - (optimizer\beta1 ^ optimizer\timestep)
+            secondCorrection: 1.0 - (optimizer\beta2 ^ optimizer\timestep)
+            correctedFirst: lrTensorBinary firstMoment firstCorrection 'div
+            correctedSecond: lrTensorBinary secondMoment secondCorrection 'div
+            rootSecond: lrTensorBinary correctedSecond 0.5 'pow
+            denominator: lrTensorBinary rootSecond optimizer\epsilon 'add
+            direction: lrTensorBinary correctedFirst denominator 'div
+            update: lrTensorBinary direction optimizer\rate 'mul
+        ]
+
         nextValue: lrTensorBinary item\value update 'sub
         item\value\data: nextValue\data
-    ]
+    ]]
     return optimizer
 ]

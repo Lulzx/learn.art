@@ -226,6 +226,11 @@ lrTensorUnary: function [value operation][
         if operation = 'neg -> result: 0.0 - item
         if operation = 'exp -> result: exp item
         if operation = 'log -> result: ln item
+        if operation = 'relu -> result: (item > 0.0)? -> item -> 0.0
+        if operation = 'tanh [
+            twice: 2.0 * item
+            result: (2.0 / (1.0 + exp (0.0 - twice))) - 1.0
+        ]
         if operation = 'sigmoid [
             if item >= 0.0 [
                 negativeItem: 0.0 - item
@@ -292,6 +297,16 @@ square: function [value][
 sigmoid: function [value][
     if is? :learnValue value -> return lrValueUnary value 'sigmoid
     return lrTensorUnary value 'sigmoid
+]
+
+relu: function [value][
+    if is? :learnValue value -> return lrValueUnary value 'relu
+    return lrTensorUnary value 'relu
+]
+
+tensorTanh: function [value][
+    if is? :learnValue value -> return lrValueUnary value 'tanh
+    return lrTensorUnary value 'tanh
 ]
 
 tensorExp: function [value][

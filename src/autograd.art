@@ -176,6 +176,8 @@ lrForwardNode: function [node][
     if op = 'exp -> node\value: lrTensorUnary node\parents\0\value 'exp
     if op = 'log -> node\value: lrTensorUnary node\parents\0\value 'log
     if op = 'sigmoid -> node\value: lrTensorUnary node\parents\0\value 'sigmoid
+    if op = 'relu -> node\value: lrTensorUnary node\parents\0\value 'relu
+    if op = 'tanh -> node\value: lrTensorUnary node\parents\0\value 'tanh
     if op = 'add -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'add
     if op = 'sub -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'sub
     if op = 'mul -> node\value: lrTensorBinary node\parents\0\value node\parents\1\value 'mul
@@ -266,6 +268,20 @@ backward: function [output][
             one: lrOnesLike node\value
             complement: lrTensorBinary one node\value 'sub
             local: lrTensorBinary node\value complement 'mul
+            contribution: lrTensorBinary up local 'mul
+            lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'relu [
+            maskData: map node\parents\0\value\data 'item -> (item > 0.0)? -> 1.0 -> 0.0
+            mask: lrMakeTensor node\parents\0\value\shape maskData
+            contribution: lrTensorBinary up mask 'mul
+            lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'tanh [
+            localValue: lrTensorUnary node\parents\0\value 'tanh
+            localSquare: lrTensorBinary localValue 2.0 'pow
+            one: lrOnesLike localValue
+            local: lrTensorBinary one localSquare 'sub
             contribution: lrTensorBinary up local 'mul
             lrAccumulate node\parents\0 contribution
         ]

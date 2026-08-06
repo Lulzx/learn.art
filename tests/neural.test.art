@@ -1,0 +1,50 @@
+import'unitt!
+import relative {../src/learn}!
+
+suite "neural composition" [
+    test "differentiates relu and tanh" [
+        x: variable tensor [0.0 1.0]
+        activated: relu x
+        curved: tensorTanh activated
+        loss: tensorSum curved
+        backward loss
+        xGradient: gradient x
+        gradData: xGradient\data
+        assert -> 0.0 = gradData\0
+        assert -> gradData\1 > 0.0
+    ]
+
+    test "keeps momentum and Adam state" [
+        p1: variable 1.0
+        p1\parameter: true
+        p1\gradient: tensor 2.0
+        momentumOptimizer: momentum.rate: 0.1.beta: 0.9 @[p1]
+        step momentumOptimizer
+        momentumValue: p1\value\data\0
+
+        p2: variable 1.0
+        p2\parameter: true
+        p2\gradient: tensor 2.0
+        adamOptimizer: adam.rate: 0.1 @[p2]
+        step adamOptimizer
+        adamValue: p2\value\data\0
+        assert -> 0.8 = momentumValue
+        assert -> (abs adamValue - 0.9) < 0.00001
+    ]
+
+    test "builds and trains a dense MLP graph" [
+        x: tensor [[0.0] [1.0] [2.0] [3.0]]
+        y: tensor [[1.0] [3.0] [5.0] [7.0]]
+        estimator: fit.mlp.hidden: 3.epochs: 20 x y
+        prediction: predict estimator x
+        fittedModel: estimator\model
+        fittedParameters: parameters fittedModel
+        parameterCount: size fittedParameters
+        predictionShape: shape prediction
+        fittedLoss: fittedModel\loss
+        lossValue: fittedLoss\value\data\0
+        assert -> 4 = parameterCount
+        assert -> [4 1] = predictionShape
+        assert -> lossValue = lossValue
+    ]
+]

@@ -1,0 +1,8 @@
+import relative {../src/learn}!
+
+do [
+    x: tensor [[0.0] [1.0] [2.0] [3.0]]
+    y: tensor [[1.0] [3.0] [5.0] [7.0]]
+    estimator: fit.mlp.hidden: 4.epochs: 200 x y
+    print predict estimator x
+]

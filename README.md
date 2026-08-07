@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.25 adds GPU-resident MPSGraph training, an end-to-end MNIST workflow, and NCHW convolution/pooling schedules through the vendored [`arturo-metal`](https://github.com/Lulzx/arturo-metal) package.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.26 turns reverse differentiation and optimizer updates into inspectable graph transformations, then compiles the resulting training graph through [`arturo-metal`](https://github.com/Lulzx/arturo-metal).
 
 ## Example
 
@@ -133,6 +133,16 @@ On macOS, build the vendored backend once with `cd vendor/metal && arturo script
 
 ## GPU-resident training and MNIST
 
+For a generic graph, import `src/metal-autodiff.art` and compile the same model and optimizer used by eager training:
+
+```arturo
+optimizer: momentum.rate: 0.01.beta: 0.9 (parameters model)
+artifact: compileTraining model 'loss optimizer
+loss: executeMpsTraining.with: #[x: features y: targets] artifact
+```
+
+The pipeline is ordinary data: `differentiateGraph graphData 'loss` appends automatic-gradient nodes, and `optimizerGraph differentiated optimizer` appends parameter and optimizer-state updates. `compileTraining` performs those transformations and lowers the complete graph to one reusable MPSGraph executable. Parameters and momentum slots remain on the GPU; `mpsTrainingModelState` and `mpsTrainingOptimizerState` are explicit host materialization boundaries.
+
 Import `src/metal-training.art` and create `mpsMlpTrainer.rate:.seed: batch input hidden classes`. Its compiled program performs the dense forward pass, cross-entropy backward pass, ReLU gradient, SGD update, and next-step parameter handoff on MPSGraph. Only the scalar loss is downloaded during training; `mpsMlpState` is an explicit checkpoint boundary.
 
 `loadMpsMnist` maps raw IDX bytes directly into normalized float32 Metal tensors. `mpsMnistBatch` slices batches on the GPU, `trainMpsMnist.epochs:` trains them, and `evaluateMpsMnist` evaluates the test partition. The included one-epoch 784–128–10 example reached 94.57% test accuracy in 4.35 seconds on the development Apple M4 Pro; results vary by machine.
@@ -163,6 +173,7 @@ arturo examples/metrics.art
 arturo examples/inference.art
 arturo examples/explainability.art
 arturo examples/native-cpu.art
+arturo examples/compiled-mps-training.art
 arturo examples/mnist-mps.art
 ```
 

@@ -1,0 +1,218 @@
+; Generic compiled MPSGraph automatic differentiation and momentum SGD.
+
+import relative {./metal-backend}!
+
+define :learnMpsTrainingArtifact [
+    init: constructor [schedule metalGraph program frozen parameterStorage optimizerStorage parameterNames optimizerNames context rate beta released]
+]
+
+lrMpsTrainingLeaf: function [artifact name node environment][
+    graphNode: metalGraphInput artifact\metalGraph name node\shape
+    set environment name graphNode
+    if node\role = 'parameter [
+        storage: lrMetalRecordTensor node\value
+        set artifact\parameterStorage name storage
+        'artifact\parameterNames ++ name
+    ]
+    if node\role = 'constant [
+        storage: lrMetalRecordTensor node\value
+        set artifact\frozen name storage
+    ]
+    if node\role = 'optimizer [
+        storage: lrMetalRecordTensor node\value
+        set artifact\optimizerStorage name storage
+        'artifact\optimizerNames ++ name
+    ]
+    return graphNode
+]
+
+lrMpsLowerTrainingSchedule: function [artifact][
+    environment: lrFreshDictionary
+    data: artifact\schedule\graph
+    loop data\order 'name [
+        node: data\nodes\[name]
+        loweredNode: null
+        if contains? ['input 'parameter 'constant 'optimizer] node\role -> loweredNode: lrMpsTrainingLeaf artifact name node environment
+        if or? [node\role = 'operation][node\role = 'alias] -> loweredNode: lrMetalOperation artifact environment name node
+        if null? loweredNode -> panic ~"learn: MPS training cannot lower node |name|"
+        set environment name loweredNode
+    ]
+    return environment
+]
+
+lrCompileMpsTrainingGraph: function [trainingData][
+    validateGraphData trainingData
+    unless key? trainingData 'differentiation -> panic "learn: compiled MPS training requires differentiated graph data"
+    unless key? trainingData 'training -> panic "learn: compiled MPS training requires optimizer graph data"
+    lossName: trainingData\differentiation\loss
+    schedule: #[format: "learn.schedule" version: "0.26" backend: 'mps output: lossName graph: trainingData fusionGroups: lrFreshBlock steps: lrFreshBlock]
+    optimizer: trainingData\training\optimizer
+    programGraph: metalGraph lrMetalState\runtime
+    artifact: to :learnMpsTrainingArtifact @[schedule programGraph null lrFreshDictionary lrFreshDictionary lrFreshDictionary lrFreshBlock lrFreshBlock lrMetalState\runtime (to :floating optimizer\rate) (to :floating optimizer\beta) false]
+    set artifact 'frozen lrFreshDictionary
+    set artifact 'parameterStorage lrFreshDictionary
+    set artifact 'optimizerStorage lrFreshDictionary
+    set artifact 'parameterNames lrFreshBlock
+    set artifact 'optimizerNames lrFreshBlock
+    environment: lrMpsLowerTrainingSchedule artifact
+    targets: @[environment\[lossName]]
+    loop artifact\parameterNames 'parameterName [
+        updateName: trainingData\training\parameterUpdates\[parameterName]
+        'targets ++ environment\[updateName]
+    ]
+    loop artifact\optimizerNames 'optimizerName [
+        updateName: trainingData\training\optimizerUpdates\[optimizerName]
+        'targets ++ environment\[updateName]
+    ]
+    artifact\program: metalCompile programGraph targets
+    return artifact
+]
+
+compileMpsTraining: function [schedule][
+    callAttrs: attrs
+    unless and? [dictionary? schedule][schedule\format = "learn.schedule"] -> panic "learn: compileMpsTraining expects a schedule"
+    rate: 0.01
+    beta: 0.0
+    if key? callAttrs 'rate -> rate: callAttrs\rate
+    if key? callAttrs 'momentum -> beta: callAttrs\momentum
+    unless and? [lrNumeric? rate][rate > 0.0] -> panic "learn: compiled MPS training rate must be positive"
+    unless and? [lrNumeric? beta][and? [beta >= 0.0][beta < 1.0]] -> panic "learn: compiled MPS momentum must be in [0, 1)"
+    unless not? empty? schedule\graph\parameters -> panic "learn: compiled MPS training requires parameters"
+    descriptor: #[kind: (beta > 0.0)? -> 'momentum -> 'sgd rate: rate beta: beta]
+    differentiated: differentiateGraph schedule\graph schedule\output
+    trainingData: lrOptimizerGraphFromDescriptor differentiated descriptor
+    return lrCompileMpsTrainingGraph trainingData
+]
+
+compileTraining: function [model lossName optimizer][
+    unless is? :learnGraph model -> panic "learn: compileTraining expects a graph model"
+    data: graphData model
+    differentiated: differentiateGraph data lossName
+    trainingData: optimizerGraph differentiated optimizer
+    return lrCompileMpsTrainingGraph trainingData
+]
+
+lrMpsTrainingRuntimeFeeds: function [artifact supplied temporaries][
+    runtimeFeeds: lrFreshDictionary
+    loop artifact\program\inputs 'placeholder [
+        feedName: placeholder\name
+        storage: null
+        if key? artifact\frozen feedName -> storage: artifact\frozen\[feedName]
+        if key? artifact\parameterStorage feedName -> storage: artifact\parameterStorage\[feedName]
+        if key? artifact\optimizerStorage feedName -> storage: artifact\optimizerStorage\[feedName]
+        if null? storage [
+            unless key? supplied feedName -> panic ~"learn: MPS training input |feedName| has not been provided"
+            storage: lrMetalFeedTensor supplied\[feedName] temporaries
+        ]
+        set runtimeFeeds feedName storage
+    ]
+    return runtimeFeeds
+]
+
+executeMpsTraining: function [artifact][
+    callAttrs: attrs
+    unless is? :learnMpsTrainingArtifact artifact -> panic "learn: executeMpsTraining expects a compiled training artifact"
+    if artifact\released -> panic "learn: compiled MPS training artifact has been released"
+    supplied: lrFreshDictionary
+    if key? callAttrs 'with -> supplied: callAttrs\with
+    unless dictionary? supplied -> panic "learn: executeMpsTraining.with expects a dictionary"
+    temporaries: lrFreshBlock
+    runtimeFeeds: lrMpsTrainingRuntimeFeeds artifact supplied temporaries
+    results: metalRun.with: runtimeFeeds artifact\program
+    lossValues: metalDownload results\0
+
+    resultIndex: 1
+    loop artifact\parameterNames 'parameterName [
+        metalRelease artifact\parameterStorage\[parameterName]
+        set artifact\parameterStorage parameterName results\[resultIndex]
+        resultIndex: resultIndex + 1
+    ]
+    loop artifact\optimizerNames 'optimizerName [
+        metalRelease artifact\optimizerStorage\[optimizerName]
+        set artifact\optimizerStorage optimizerName results\[resultIndex]
+        resultIndex: resultIndex + 1
+    ]
+    metalRelease results\0
+    loop temporaries 'temporary -> metalRelease temporary
+    return lossValues\0
+]
+
+mpsTrainingModelState: function [artifact][
+    unless is? :learnMpsTrainingArtifact artifact -> panic "learn: mpsTrainingModelState expects a compiled training artifact"
+    if artifact\released -> panic "learn: compiled MPS training artifact has been released"
+    valuesByName: lrFreshDictionary
+    loop artifact\parameterNames 'parameterName [
+        storage: artifact\parameterStorage\[parameterName]
+        data: metalDownload storage
+        buffer: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: 'float64 count: size data data: data]
+        set valuesByName parameterName #[shape: new storage\shape buffer: buffer]
+    ]
+    return #[format: "learn.state" version: "0.10" parameters: new artifact\parameterNames values: valuesByName]
+]
+
+mpsTrainingOptimizerState: function [artifact][
+    unless is? :learnMpsTrainingArtifact artifact -> panic "learn: mpsTrainingOptimizerState expects a compiled training artifact"
+    if artifact\released -> panic "learn: compiled MPS training artifact has been released"
+    velocities: lrFreshDictionary
+    loop artifact\optimizerNames 'optimizerName [
+        storage: artifact\optimizerStorage\[optimizerName]
+        set velocities optimizerName #[shape: new storage\shape data: metalDownload storage]
+    ]
+    kind: (artifact\beta > 0.0)? -> 'momentum -> 'sgd
+    return #[format: "learn.mps-optimizer-state" version: "0.26" kind: kind rate: artifact\rate beta: artifact\beta velocities: velocities]
+]
+
+loadMpsTrainingModelState: function [artifact state][
+    unless is? :learnMpsTrainingArtifact artifact -> panic "learn: loadMpsTrainingModelState expects a compiled training artifact"
+    if artifact\released -> panic "learn: compiled MPS training artifact has been released"
+    unless and? [dictionary? state][and? [key? state 'format][state\format = "learn.state"]] -> panic "learn: unsupported MPS model state"
+    unless state\parameters = artifact\parameterNames -> panic "learn: MPS model state parameter names do not match"
+    staged: lrFreshDictionary
+    loop artifact\parameterNames 'parameterName [
+        unless key? state\values parameterName -> panic ~"learn: MPS model state is missing |parameterName|"
+        entry: state\values\[parameterName]
+        expectedShape: artifact\parameterStorage\[parameterName]\shape
+        unless entry\shape = expectedShape -> panic ~"learn: MPS model state shape for |parameterName| does not match"
+        restored: tensorFromBuffer entry\shape entry\buffer
+        set staged parameterName lrMetalUpload restored\shape restored\data
+    ]
+    loop artifact\parameterNames 'parameterName [
+        metalRelease artifact\parameterStorage\[parameterName]
+        set artifact\parameterStorage parameterName staged\[parameterName]
+    ]
+    return artifact
+]
+
+loadMpsTrainingOptimizerState: function [artifact state][
+    unless is? :learnMpsTrainingArtifact artifact -> panic "learn: loadMpsTrainingOptimizerState expects a compiled training artifact"
+    if artifact\released -> panic "learn: compiled MPS training artifact has been released"
+    unless and? [dictionary? state][and? [key? state 'format][state\format = "learn.mps-optimizer-state"]] -> panic "learn: unsupported MPS optimizer state"
+    unless state\version = "0.26" -> panic "learn: unsupported MPS optimizer state version"
+    unless and? [state\rate = artifact\rate][state\beta = artifact\beta] -> panic "learn: MPS optimizer hyperparameters do not match"
+    unless (keys state\velocities) = (keys artifact\optimizerStorage) -> panic "learn: MPS optimizer slots do not match"
+    staged: lrFreshDictionary
+    loop artifact\optimizerNames 'optimizerName [
+        entry: state\velocities\[optimizerName]
+        expectedShape: artifact\optimizerStorage\[optimizerName]\shape
+        unless entry\shape = expectedShape -> panic ~"learn: MPS optimizer shape for |optimizerName| does not match"
+        set staged optimizerName lrMetalUpload entry\shape entry\data
+    ]
+    loop artifact\optimizerNames 'optimizerName [
+        metalRelease artifact\optimizerStorage\[optimizerName]
+        set artifact\optimizerStorage optimizerName staged\[optimizerName]
+    ]
+    return artifact
+]
+
+releaseMpsTraining: function [artifact][
+    unless is? :learnMpsTrainingArtifact artifact -> panic "learn: releaseMpsTraining expects a compiled training artifact"
+    unless artifact\released [
+        loop values artifact\optimizerStorage 'storage -> metalRelease storage
+        loop values artifact\parameterStorage 'storage -> metalRelease storage
+        loop values artifact\frozen 'storage -> metalRelease storage
+        metalRelease artifact\program
+        metalRelease artifact\metalGraph
+        artifact\released: true
+    ]
+    return null
+]

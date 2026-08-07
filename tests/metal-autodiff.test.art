@@ -1,0 +1,70 @@
+import'unitt!
+import relative {../src/metal-autodiff}!
+
+suite "compiled MPS automatic differentiation" [
+    test "trains an arbitrary scheduled graph with momentum state" [
+        xNode: lrInputFrom tensor.zeros [2 2]
+        yNode: lrInputFrom tensor.zeros [2 1]
+        model: graph [
+            x: xNode
+            y: yNode
+            w: parameter tensor [[1.0] [1.0]]
+            prediction: matmul x w
+            residual: prediction - y
+            squared: square residual
+            loss: mean squared
+        ]
+        feed: #[x: tensor [[1.0 2.0] [3.0 4.0]] y: tensor [[0.0] [0.0]]]
+        data: graphData model
+        differentiated: differentiateGraph data 'loss
+        optimizer: momentum.rate: 0.01.beta: 0.9 (parameters model)
+        trainingData: optimizerGraph differentiated optimizer
+        gradientName: differentiated\differentiation\gradients\w
+        parameterUpdateName: trainingData\training\parameterUpdates\w
+        velocityName: first trainingData\training\optimizerNames
+        assert -> 'automaticGradient = differentiated\nodes\[gradientName]\operation
+        assert -> 'sub = trainingData\nodes\[parameterUpdateName]\operation
+        assert -> 'optimizer = trainingData\nodes\[velocityName]\role
+        artifact: compileTraining model 'loss optimizer
+        initialLoss: executeMpsTraining.with: feed artifact
+        finalLoss: initialLoss
+        stepIndex: 0
+        while [stepIndex < 80][
+            finalLoss: executeMpsTraining.with: feed artifact
+            stepIndex: stepIndex + 1
+        ]
+        modelState: mpsTrainingModelState artifact
+        optimizerState: mpsTrainingOptimizerState artifact
+        loadStateDict model modelState
+        forward.with: feed model
+        syncedLoss: model\loss\value\data\0
+        assert -> finalLoss < initialLoss
+        assert -> syncedLoss < initialLoss
+        assert -> 'momentum = optimizerState\kind
+        assert -> 1 = size optimizerState\velocities
+        loadMpsTrainingModelState artifact modelState
+        loadMpsTrainingOptimizerState artifact optimizerState
+        releaseMpsTraining artifact
+        assert -> artifact\released
+    ]
+
+    test "supports stateless SGD and validates scalar losses" [
+        model: graph [
+            x: inputShape [2]
+            w: parameter tensor [2.0 2.0]
+            prediction: x * w
+            squared: square prediction
+            loss: mean squared
+        ]
+        data: graphData model
+        optimizer: sgd.rate: 0.05 (parameters model)
+        artifact: compileTraining model 'loss optimizer
+        feed: #[x: tensor [1.0 2.0]]
+        loss: executeMpsTraining.with: feed artifact
+        optimizerState: mpsTrainingOptimizerState artifact
+        assert -> loss > 0.0
+        assert -> 'sgd = optimizerState\kind
+        assert -> empty? optimizerState\velocities
+        releaseMpsTraining artifact
+    ]
+]

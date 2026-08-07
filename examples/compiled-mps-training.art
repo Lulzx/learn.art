@@ -1,0 +1,21 @@
+import relative {../src/metal-autodiff}!
+
+do [
+    model: graph [
+        x: inputShape [2 2]
+        y: inputShape [2 1]
+        w: parameter tensor [[1.0] [1.0]]
+        prediction: matmul x w
+        residual: prediction - y
+        squared: square residual
+        loss: mean squared
+    ]
+
+    optimizer: momentum.rate: 0.01.beta: 0.9 (parameters model)
+    artifact: compileTraining model 'loss optimizer
+    feed: #[x: tensor [[1.0 2.0] [3.0 4.0]] y: tensor [[0.0] [0.0]]]
+
+    loop 1..80 'unused -> executeMpsTraining.with: feed artifact
+    print executeMpsTraining.with: feed artifact
+    releaseMpsTraining artifact
+]

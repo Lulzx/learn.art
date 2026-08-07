@@ -76,16 +76,20 @@ lrMetalParent: function [artifact environment parent][
     unless and? [dictionary? parent][and? [key? parent 'role][parent\role = 'constant]] -> panic "learn: malformed inline MPS constant"
     frozenKeys: keys artifact\frozen
     index: size frozenKeys
-    name: to :literal ~"lrInline|index|"
+    inlineName: to :literal ~"lrInline|index|"
     record: parent\value
-    graphNode: metalGraphInput artifact\metalGraph name record\shape
-    set artifact\frozen name lrMetalRecordTensor record
-    return graphNode
+    inlineNode: metalGraphInput artifact\metalGraph inlineName record\shape
+    inlineStorage: lrMetalRecordTensor record
+    set artifact\frozen inlineName inlineStorage
+    return inlineNode
 ]
 
 lrMetalParents: function [artifact environment node][
     result: lrFreshBlock
-    loop node\parents 'parent -> 'result ++ @[lrMetalParent artifact environment parent]
+    loop node\parents 'parent [
+        resolvedParent: lrMetalParent artifact environment parent
+        'result ++ @[resolvedParent]
+    ]
     return result
 ]
 
@@ -124,6 +128,7 @@ lrMetalOperation: function [artifact environment name node][
     if operation = 'conv2d -> return metalGraphConv2d.stride: node\context\stride.padding: node\context\padding parents\0 parents\1
     if operation = 'maxPool2d -> return metalGraphMaxPool2d.stride: node\context\stride.padding: node\context\padding parents\0 node\context\kernel
     if operation = 'avgPool2d -> return metalGraphAvgPool2d.stride: node\context\stride.padding: node\context\padding parents\0 node\context\kernel
+    if operation = 'automaticGradient -> return metalGraphGradient parents\0 parents\1
     if operation = 'add -> return metalGraphAdd parents\0 parents\1
     if operation = 'sub -> return metalGraphSub parents\0 parents\1
     if operation = 'mul -> return metalGraphMul parents\0 parents\1

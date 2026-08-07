@@ -380,6 +380,136 @@ executeCpu: function [schedule][
     return outputValue
 ]
 
+lrTrainingNodeName: function [data prefix sourceName][
+    candidate: to :literal ~"|prefix|_|sourceName|"
+    if key? data\nodes candidate -> panic ~"learn: generated training node |candidate| already exists"
+    return candidate
+]
+
+lrTrainingScalarNode: function [value][
+    return #[
+        role: 'constant
+        operation: 'constant
+        shape: lrFreshBlock
+        device: 'cpu
+        parents: lrFreshBlock
+        context: null
+        value: #[shape: lrFreshBlock device: 'cpu data: @[(to :floating value)]]
+    ]
+]
+
+differentiateGraph: function [data outputName][
+    optimized: optimizeGraph data outputName
+    lossName: to :literal outputName
+    lossShape: optimized\nodes\[lossName]\shape
+    lossCount: lrCount lossShape
+    unless lossCount = 1 -> panic "learn: differentiateGraph requires a scalar output"
+    nextNodes: lrFreshDictionary
+    loop optimized\order 'name -> set nextNodes name optimized\nodes\[name]
+    nextOrder: new optimized\order
+    gradientNames: lrFreshDictionary
+    loop optimized\parameters 'parameterName [
+        gradientName: lrTrainingNodeName optimized "lrGradient" parameterName
+        parameterNode: optimized\nodes\[parameterName]
+        gradientNode: #[
+            role: 'operation
+            operation: 'automaticGradient
+            shape: new parameterNode\shape
+            device: parameterNode\device
+            parents: @[lossName parameterName]
+            context: #[loss: lossName parameter: parameterName]
+            value: null
+        ]
+        set nextNodes gradientName gradientNode
+        'nextOrder ++ gradientName
+        set gradientNames parameterName gradientName
+    ]
+    return #[
+        format: "learn.graph"
+        version: "0.26"
+        inputs: new optimized\inputs
+        parameters: new optimized\parameters
+        order: nextOrder
+        nodes: nextNodes
+        differentiation: #[loss: lossName gradients: gradientNames]
+    ]
+]
+
+lrOptimizerGraphDescriptor: function [optimizer][
+    if is? :learnSgd optimizer -> return #[kind: 'sgd rate: optimizer\rate beta: 0.0]
+    if is? :learnMomentum optimizer -> return #[kind: 'momentum rate: optimizer\rate beta: optimizer\beta]
+    panic "learn: compiled optimizerGraph currently supports SGD and momentum"
+]
+
+lrOptimizerGraphFromDescriptor: function [differentiated descriptor][
+    validateGraphData differentiated
+    unless key? differentiated 'differentiation -> panic "learn: optimizerGraph expects differentiated graph data"
+    nextNodes: lrFreshDictionary
+    loop differentiated\order 'name -> set nextNodes name differentiated\nodes\[name]
+    nextOrder: new differentiated\order
+    rateName: lrTrainingNodeName differentiated "lrOptimizer" "rate"
+    set nextNodes rateName lrTrainingScalarNode descriptor\rate
+    'nextOrder ++ rateName
+    betaName: null
+    if descriptor\kind = 'momentum [
+        betaName: lrTrainingNodeName differentiated "lrOptimizer" "beta"
+        set nextNodes betaName lrTrainingScalarNode descriptor\beta
+        'nextOrder ++ betaName
+    ]
+
+    parameterUpdates: lrFreshDictionary
+    optimizerUpdates: lrFreshDictionary
+    optimizerNames: lrFreshBlock
+    loop differentiated\parameters 'parameterName [
+        gradientName: differentiated\differentiation\gradients\[parameterName]
+        updateSource: gradientName
+        if descriptor\kind = 'momentum [
+            velocityName: lrTrainingNodeName differentiated "lrVelocity" parameterName
+            parameterNode: differentiated\nodes\[parameterName]
+            zeros: map parameterNode\value\data 'unused -> 0.0
+            velocityNode: #[role: 'optimizer operation: 'optimizer shape: new parameterNode\shape device: parameterNode\device parents: lrFreshBlock context: #[parameter: parameterName] value: #[shape: new parameterNode\shape device: parameterNode\device data: zeros]]
+            set nextNodes velocityName velocityNode
+            'nextOrder ++ velocityName
+            retainedName: lrTrainingNodeName differentiated "lrRetainedVelocity" parameterName
+            retainedNode: #[role: 'operation operation: 'mul shape: new parameterNode\shape device: parameterNode\device parents: @[betaName velocityName] context: null value: null]
+            set nextNodes retainedName retainedNode
+            'nextOrder ++ retainedName
+            velocityUpdateName: lrTrainingNodeName differentiated "lrVelocityUpdate" parameterName
+            velocityUpdateNode: #[role: 'operation operation: 'add shape: new parameterNode\shape device: parameterNode\device parents: @[retainedName gradientName] context: null value: null]
+            set nextNodes velocityUpdateName velocityUpdateNode
+            'nextOrder ++ velocityUpdateName
+            set optimizerUpdates velocityName velocityUpdateName
+            'optimizerNames ++ velocityName
+            updateSource: velocityUpdateName
+        ]
+        parameterNode: differentiated\nodes\[parameterName]
+        scaledName: lrTrainingNodeName differentiated "lrScaledUpdate" parameterName
+        scaledNode: #[role: 'operation operation: 'mul shape: new parameterNode\shape device: parameterNode\device parents: @[rateName updateSource] context: null value: null]
+        set nextNodes scaledName scaledNode
+        'nextOrder ++ scaledName
+        nextName: lrTrainingNodeName differentiated "lrParameterUpdate" parameterName
+        nextNode: #[role: 'operation operation: 'sub shape: new parameterNode\shape device: parameterNode\device parents: @[parameterName scaledName] context: null value: null]
+        set nextNodes nextName nextNode
+        'nextOrder ++ nextName
+        set parameterUpdates parameterName nextName
+    ]
+    return #[
+        format: "learn.graph"
+        version: "0.26"
+        inputs: new differentiated\inputs
+        parameters: new differentiated\parameters
+        order: nextOrder
+        nodes: nextNodes
+        differentiation: differentiated\differentiation
+        training: #[optimizer: descriptor parameterUpdates: parameterUpdates optimizerUpdates: optimizerUpdates optimizerNames: optimizerNames]
+    ]
+]
+
+optimizerGraph: function [differentiated optimizer][
+    descriptor: lrOptimizerGraphDescriptor optimizer
+    return lrOptimizerGraphFromDescriptor differentiated descriptor
+]
+
 graphDot: function [source][
     data: (is? :learnGraph source)? -> graphData source -> source
     validateGraphData data

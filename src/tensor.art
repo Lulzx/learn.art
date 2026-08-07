@@ -44,7 +44,12 @@ define :learnTensorView [
 
 lrMakeStorageOwner: function [device handle][
     if null? handle -> return null
-    owner: #[device: device handle: null references: 1 released: false]
+    owner: lrFreshDictionary
+    set owner 'device device
+    set owner 'handle null
+    set owner 'references 1
+    set owner 'version 0
+    set owner 'released false
     ; Preserve backend handle identity: Arturo dictionary literals copy nested
     ; dictionaries, while a storage handle may itself be a mutable record.
     set owner 'handle handle
@@ -305,6 +310,14 @@ lrMakeTensorTypedWithStorage: function [dims data device dtype storage][
     set result 'dtype normalizedDtype
     set result 'storage storage
     set result 'storageOwner lrMakeStorageOwner device storage
+    set result 'mutationVersion 0
+    mutationState: lrFreshDictionary
+    set mutationState 'version 0
+    set mutationState 'data null
+    set mutationState 'storageOwner null
+    set mutationState 'data ownedData
+    set mutationState 'storageOwner result\storageOwner
+    set result 'mutationState mutationState
     return result
 ]
 
@@ -337,7 +350,11 @@ lrSliceHostRecord: function [record operation][
 
 lrTensorViewNativeStorage: function [view][
     if key? view 'nativeStorageOwner [
-        unless null? view\nativeStorageOwner -> return view\nativeStorageOwner
+        unless null? view\nativeStorageOwner [
+            if view\nativeStorageVersion = view\mutationState\version -> return view\nativeStorageOwner
+            lrReleaseStorageOwner view\nativeStorageOwner
+            view\nativeStorageOwner: null
+        ]
     ]
     if (lrCount view\shape) = 0 -> return null
     owner: view\storageOwner
@@ -354,13 +371,15 @@ lrTensorViewNativeStorage: function [view][
     ]
     nativeOwner: lrMakeStorageOwner view\device working
     set view 'nativeStorageOwner nativeOwner
+    set view 'nativeStorageVersion view\mutationState\version
     return nativeOwner
 ]
 
 lrTensorViewHostData: function [view][
-    if (size view\data) = (lrCount view\shape) -> return view\data
+    if and? [(size view\data) = (lrCount view\shape)][view\dataVersion = view\mutationState\version] -> return view\data
     if (lrCount view\shape) = 0 [
         view\data: lrFreshBlock
+        view\dataVersion: view\mutationState\version
         return view\data
     ]
     nativeOwner: lrTensorViewNativeStorage view
@@ -370,25 +389,40 @@ lrTensorViewHostData: function [view][
         output: lrFreshBlock
         loop downloaded 'item -> 'output ++ lrFloat item
         view\data: output
+        view\dataVersion: view\mutationState\version
         return view\data
     ]
     rootData: null
     unless null? view\storageOwner -> rootData: lrBackendCall view\device 'download @[view\storageOwner\handle]
-    if null? rootData -> rootData: lrTensorHostData view\root
+    if null? rootData -> rootData: new view\mutationState\data
     record: #[shape: new view\root\shape data: rootData]
     loop view\operations 'operation -> record: lrSliceHostRecord record operation
     view\data: record\data
+    view\dataVersion: view\mutationState\version
     return view\data
 ]
 
+lrSyncTensorMutation: function [source][
+    unless key? source 'mutationState -> return source
+    if source\mutationVersion < source\mutationState\version [
+        source\data: new source\mutationState\data
+        source\mutationVersion: source\mutationState\version
+        owner: source\mutationState\storageOwner
+        unless null? owner -> source\storage: owner\handle
+    ]
+    return source
+]
+
 hostMaterialized?: function [value][
-    if is? :learnTensorView value -> return (size value\data) = (lrCount value\shape)
+    if is? :learnTensorView value -> return and? [(size value\data) = (lrCount value\shape)][value\dataVersion = value\mutationState\version]
     source: (is? :learnValue value)? -> value\value -> lrAsTensor value
+    discard lrSyncTensorMutation source
     return (size source\data) = (lrCount source\shape)
 ]
 
 lrTensorHostData: function [value][
     source: (is? :learnValue value)? -> value\value -> lrAsTensor value
+    discard lrSyncTensorMutation source
     unless hostMaterialized? source [
         if null? source\storage -> panic "learn: tensor has no host data or device storage"
         downloaded: lrBackendCall source\device 'download @[source\storage]
@@ -424,6 +458,7 @@ tensorData: function [value][
 releaseTensor: function [value][
     if is? :learnTensorView value [
         value\data: lrFreshBlock
+        value\dataVersion: 0 - 1
         if key? value 'nativeStorageOwner [
             lrReleaseStorageOwner value\nativeStorageOwner
             value\nativeStorageOwner: null
@@ -482,7 +517,7 @@ tensor: function [source][
 ]
 
 lrAsTensor: function [value][
-    if is? :learnTensor value -> return value
+    if is? :learnTensor value -> return lrSyncTensorMutation value
     if is? :learnTensorView value -> return lrMakeTensorTypedOn value\shape (lrTensorViewHostData value) value\device value\dtype
     if lrNumeric? value -> return lrTensorFromData value
     panic ~"learn: expected a tensor or number, got |type value|"
@@ -512,7 +547,8 @@ dtypeOf: function [value][
 toDtype: function [value requestedDtype][
     source: lrAsTensor value
     dtype: lrValidateDeviceDtype source\device (lrNormalizeDtype requestedDtype)
-    return lrMakeTensorTypedOn source\shape (lrTensorHostData source) source\device dtype
+    data: lrTensorHostData source
+    return lrMakeTensorTypedOn source\shape data source\device dtype
 ]
 
 lrTensorTransfer: function [value requestedDevice][
@@ -521,7 +557,8 @@ lrTensorTransfer: function [value requestedDevice][
     dtype: source\dtype
     descriptor: lrBackend device
     if and? [key? descriptor 'dtypes][not? contains? descriptor\dtypes dtype] -> dtype: lrDefaultDtype device
-    return lrMakeTensorTypedOn source\shape (lrTensorHostData source) device dtype
+    data: lrTensorHostData source
+    return lrMakeTensorTypedOn source\shape data device dtype
 ]
 
 toDevice: function [value requestedDevice][
@@ -625,8 +662,75 @@ tensorSlice: function [value][
     set result 'root root
     set result 'operations operations
     set result 'storageOwner lrRetainStorageOwner owner
+    state: source\mutationState
+    if is? :learnTensorView source -> state: source\mutationState
+    set result 'mutationState state
     set result 'nativeStorageOwner null
+    negativeOne: 0 - 1
+    set result 'nativeStorageVersion negativeOne
+    set result 'dataVersion negativeOne
     return result
+]
+
+lrTensorViewRootIndices: function [view][
+    indices: lrFreshBlock
+    count: lrCount view\root\shape
+    if count > 0 [loop 0..(count - 1) 'position -> 'indices ++ position]
+    record: #[shape: new view\root\shape data: indices]
+    loop view\operations 'operation -> record: lrSliceHostRecord record operation
+    return record\data
+]
+
+lrAssignmentValues: function [target replacement][
+    count: lrCount target\shape
+    if lrNumeric? replacement [
+        values: lrFreshBlock
+        if count > 0 [loop 1..count 'unused -> 'values ++ lrFloat replacement]
+        return values
+    ]
+    source: replacement
+    unless or? [is? :learnTensor source][is? :learnTensorView source] -> source: lrAsTensor source
+    unless source\shape = target\shape -> panic ~"learn: assignment shape |source\shape| does not match target shape |target\shape|"
+    unless source\dtype = target\dtype -> panic ~"learn: assignment dtype |source\dtype| does not match target dtype |target\dtype|"
+    return tensorData source
+]
+
+lrReplaceTensorData: function [target values][
+    nextData: new values
+    unless target\device = 'cpu [
+        owner: target\mutationState\storageOwner
+        if or? [null? owner][owner\released] -> panic "learn: cannot assign to released tensor storage"
+        descriptor: lrBackend target\device
+        unless key? descriptor 'upload -> panic ~"learn: backend |target\device| does not support mutable assignment"
+        nextHandle: lrBackendCall target\device 'upload @[target\shape nextData]
+        previousHandle: owner\handle
+        owner\handle: nextHandle
+        owner\version: owner\version + 1
+        target\storage: nextHandle
+        lrBackendCall target\device 'release @[previousHandle]
+    ]
+    target\data: nextData
+    target\mutationState\version: target\mutationState\version + 1
+    set target\mutationState 'data nextData
+    target\mutationVersion: target\mutationState\version
+    return target
+]
+
+assignTensor: function [target replacement][
+    unless or? [is? :learnTensor target][is? :learnTensorView target] -> panic "learn: assignTensor expects a tensor or tensor view target"
+    values: lrAssignmentValues target replacement
+    if is? :learnTensor target -> return lrReplaceTensorData target values
+    root: target\root
+    rootData: new target\mutationState\data
+    unless (size rootData) = (lrCount root\shape) [
+        if null? target\storageOwner -> panic "learn: cannot assign through a released tensor view"
+        rootData: lrBackendCall target\device 'download @[target\storageOwner\handle]
+    ]
+    indices: lrTensorViewRootIndices target
+    unless (size indices) = (size values) -> panic "learn: malformed mutable tensor view"
+    if not? empty? indices [loop 0..((size indices) - 1) 'position -> set rootData indices\[position] values\[position]]
+    lrReplaceTensorData root rootData
+    return target
 ]
 
 lrTensorViewString: function [view][

@@ -232,6 +232,31 @@ suite "dense tensors" [
         assert -> [3.0 4.0 9.0 10.0] = owned\data
     ]
 
+    test "assigns overlapping views from an owned snapshot" [
+        source: tensor.dtype: 'float32 [1 2 3 4 5]
+        target: tensorSlice.start: 1.count: 3 source
+        replacement: tensorSlice.start: 0.count: 3 source
+        cachedReplacement: tensorData replacement
+        assignTensor target replacement
+        assert -> [1.0 1.0 2.0 3.0 5.0] = tensorData source
+        assert -> [1.0 2.0 3.0] = cachedReplacement
+        assert -> [1.0 1.0 2.0] = tensorData replacement
+        assert -> [1.0 2.0 3.0] = tensorData target
+        assignTensor target 9.0
+        assert -> [1.0 9.0 9.0 9.0 5.0] = tensorData source
+    ]
+
+    test "validates mutable assignment targets" [
+        value: tensor.dtype: 'float32 [1 2 3]
+        view: tensorSlice.count: 2 value
+        badShape?: throws? [assignTensor view (tensor.dtype: 'float32 [1])]
+        badDtype?: throws? [assignTensor view (tensor [1 2])]
+        badTarget?: throws? [assignTensor [1 2] 0.0]
+        assert -> badShape?
+        assert -> badDtype?
+        assert -> badTarget?
+    ]
+
     test "validates slice bounds and dtype names" [
         value: tensor [1 2 3]
         badStart?: throws? [tensorSlice.start: 4 value]

@@ -30,7 +30,8 @@
 - v0.28: lazy host materialization for device-resident tensors and compiled training results.
 - v0.29: explicit float32/float64 identity, deterministic promotion, and lazy read-only slice views.
 - v0.30: backend-native strided view execution and reference-counted device storage.
+- v0.31: mutable view assignment with overlap-safe snapshots and atomic copy-and-swap device updates.
 
 ## Next
 
-The next coherent milestone is mutable view assignment with overlap-safe copy-on-write semantics.
+The next coherent milestone is backend-native scatter assignment and zero-copy reshape/transpose views.

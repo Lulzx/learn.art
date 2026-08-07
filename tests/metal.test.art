@@ -72,6 +72,22 @@ suite "Metal backend" [
         releaseMps artifact
     ]
 
+    test "copy-swaps overlapping mutable MPS views" [
+        source: tensor.device: 'mps [1 2 3 4 5]
+        target: tensorSlice.start: 1.count: 3 source
+        replacement: tensorSlice.start: 0.count: 3 source
+        assert -> [1.0 2.0 3.0] = tensorData replacement
+        assignTensor target replacement
+        assert -> not? hostMaterialized? replacement
+        assert -> [1.0 1.0 2.0 3.0 5.0] = tensorData source
+        actualReplacement: tensorData replacement
+        assert -> [1.0 1.0 2.0] = actualReplacement
+        assert -> [1.0 2.0 3.0] = tensorData target
+        releaseTensor replacement
+        releaseTensor target
+        releaseTensor source
+    ]
+
     test "matches CPU cross entropy" [
         logitsNode: lrInputFrom tensor.zeros [2 3]
         labelsNode: lrInputFrom tensor.zeros [2]

@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.30 executes lazy strided views in capable device backends and keeps shared device storage alive with explicit reference counts.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.31 adds overlap-safe mutable view assignment with versioned caches and atomic device-storage replacement.
 
 ## Example
 
@@ -41,11 +41,13 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 - overloaded `+`, `-`, `*`, `/`, `^`, and unary `neg`
 - `shape`, `reshape`, `transpose`, `tensorAt`, `square`, `tensorSum`, `mean`, and `matmul`
 - `conv2d`, `maxPool2d`, and `avgPool2d` for NCHW tensors
-- `availableDevices`, `deviceOf`, `dtypeOf`, `toDevice`, `toDtype`, `tensorSlice`, `hostMaterialized?`, `materializeTensor`, `tensorData`, `tensorBuffer`, and `tensorFromBuffer`
+- `availableDevices`, `deviceOf`, `dtypeOf`, `toDevice`, `toDtype`, `tensorSlice`, `assignTensor`, `hostMaterialized?`, `materializeTensor`, `tensorData`, `tensorBuffer`, and `tensorFromBuffer`
 
 Tensors contain floating-point `data`, inferred `shape`, row-major `strides`, and an explicit `float32` or `float64` dtype. `tensor.dtype:` selects identity, `dtypeOf` inspects it, and `toDtype` creates an owned conversion. Mixed binary operations promote to `float64` when either operand is `float64`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices.
 
-`tensorSlice.axis:.start:.count:.step:` creates a lazy, read-only strided view. Views retain their source's device and dtype; materialization caches an owned projection, while eager arithmetic returns an ordinary owned tensor. Device views retain the root allocation, so the source may be released first. Backends may implement native slicing; MPS uses slice or gather and can feed the projection directly into a compiled program without filling its host cache.
+`tensorSlice.axis:.start:.count:.step:` creates a lazy strided view. Views retain their source's device and dtype; materialization caches an owned projection, while eager arithmetic returns an ordinary owned tensor. Device views retain the root allocation, so the source may be released first. Backends may implement native slicing; MPS uses slice or gather and can feed the projection directly into a compiled program without filling its host cache.
+
+`assignTensor target replacement` mutates an owned tensor or the root selected by a view. Scalars fill the target; tensor replacements require matching shape and dtype. Replacement values are snapshotted before mutation, making overlapping slice assignments deterministic. Alias caches are versioned and invalidated lazily. Device writes upload a complete replacement and atomically swap the shared handle before releasing the old allocation.
 
 `matmul` follows the usual generalized rules: two vectors produce a scalar dot product, matrix–vector and vector–matrix products remove the promoted unit dimension, and rank-2-or-higher operands broadcast their leading batch dimensions. The same shapes and batch accumulation rules apply to reverse-mode gradients and scheduled CPU execution.
 
@@ -185,4 +187,4 @@ arturo examples/compiled-mps-training.art
 arturo examples/mnist-mps.art
 ```
 
-The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Mutable view assignment and overlap-safe copy-on-write behavior remain outside the current milestone.
+The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Backend-native scatter assignment and zero-copy reshape/transpose views remain outside the current milestone.

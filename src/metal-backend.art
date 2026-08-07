@@ -44,6 +44,8 @@ enableMetalBackend: function [][
     if null? lrMetalState\runtime -> set lrMetalState 'runtime metalContext
     registerBackend 'mps #[
         available: 'lrMetalBackendAvailable
+        defaultDtype: 'float32
+        dtypes: ['float32]
         upload: 'lrMetalUpload
         download: 'lrMetalDownload
         release: 'lrMetalReleaseStorage

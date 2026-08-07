@@ -97,7 +97,7 @@ applyTransform: function [preprocessor values][
         centered: source\data\[dataIndex] - preprocessor\mean\[featureIndex]
         'output ++ centered / preprocessor\scale\[featureIndex]
     ]]
-    return lrMakeTensorOn source\shape output source\device
+    return lrMakeTensorLike source\shape output source
 ]
 
 inverseTransform: function [preprocessor values][
@@ -117,7 +117,7 @@ inverseTransform: function [preprocessor values][
         restored: source\data\[dataIndex] * preprocessor\scale\[featureIndex]
         'output ++ restored + preprocessor\mean\[featureIndex]
     ]]
-    return lrMakeTensorOn source\shape output source\device
+    return lrMakeTensorLike source\shape output source
 ]
 
 preprocessorState: function [preprocessor][

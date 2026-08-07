@@ -28,7 +28,8 @@
 - v0.26: ordinary-data differentiation and optimizer graph transforms compiled as generic MPSGraph training programs.
 - v0.27: eager convolution/pooling reverse kernels and generic compiled convolution training on MPSGraph.
 - v0.28: lazy host materialization for device-resident tensors and compiled training results.
+- v0.29: explicit float32/float64 identity, deterministic promotion, and lazy read-only slice views.
 
 ## Next
 
-The next coherent milestone is broader dtype and view support without weakening device ownership.
+The next coherent milestone is backend-native strided view execution and reference-counted mutable storage.

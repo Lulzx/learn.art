@@ -56,9 +56,9 @@ variable: function [value][
 ]
 
 detach: function [value][
-    if is? :learnValue value -> return lrMakeTensorOn value\value\shape (lrTensorHostData value\value) value\value\device
+    if is? :learnValue value -> return lrMakeTensorLike value\value\shape (lrTensorHostData value\value) value\value
     source: lrAsTensor value
-    return lrMakeTensorOn source\shape (lrTensorHostData source) source\device
+    return lrMakeTensorLike source\shape (lrTensorHostData source) source
 ]
 
 gradient: function [value][
@@ -181,17 +181,17 @@ lrValueMatmul: function [left right][
 
 lrZerosLike: function [value][
     lrTensorHostData value
-    return lrMakeTensorOn value\shape (map value\data 'unused -> 0.0) value\device
+    return lrMakeTensorLike value\shape (map value\data 'unused -> 0.0) value
 ]
 
 lrOnesLike: function [value][
     lrTensorHostData value
-    return lrMakeTensorOn value\shape (map value\data 'unused -> 1.0) value\device
+    return lrMakeTensorLike value\shape (map value\data 'unused -> 1.0) value
 ]
 
 lrUnbroadcast: function [value targetShape][
     lrTensorHostData value
-    if value\shape = targetShape -> return lrMakeTensorOn value\shape value\data value\device
+    if value\shape = targetShape -> return lrMakeTensorLike value\shape value\data value
     data: lrFreshBlock
     targetCount: lrCount targetShape
     if targetCount > 0 [loop 1..targetCount 'unused -> 'data ++ 0.0]
@@ -202,7 +202,7 @@ lrUnbroadcast: function [value targetShape][
             set data targetIndex (data\[targetIndex] + value\data\[i])
         ]
     ]
-    return lrMakeTensorOn targetShape data value\device
+    return lrMakeTensorLike targetShape data value
 ]
 
 lrExpandReductionGradient: function [up sourceShape axis scale][
@@ -224,7 +224,7 @@ lrExpandReductionGradient: function [up sourceShape axis scale][
             'data ++ (up\data\[outputIndex] * scale)
         ]
     ]
-    return lrMakeTensorOn sourceShape data up\device
+    return lrMakeTensorLike sourceShape data up
 ]
 
 lrMatmulGradients: function [left right up][
@@ -255,8 +255,8 @@ lrMatmulGradients: function [left right up][
             ]
         ]
     ]
-    leftGradient: lrMakeTensorOn left\shape leftData left\device
-    rightGradient: lrMakeTensorOn right\shape rightData right\device
+    leftGradient: lrMakeTensorLike left\shape leftData left
+    rightGradient: lrMakeTensorLike right\shape rightData right
     return @[leftGradient rightGradient]
 ]
 
@@ -320,8 +320,8 @@ lrConv2dGradients: function [source weights up stride padding][
             ]
         ]
     ]
-    sourceGradient: lrMakeTensorOn source\shape sourceData source\device
-    weightGradient: lrMakeTensorOn weights\shape weightData weights\device
+    sourceGradient: lrMakeTensorLike source\shape sourceData source
+    weightGradient: lrMakeTensorLike weights\shape weightData weights
     return @[sourceGradient weightGradient]
 ]
 
@@ -375,7 +375,7 @@ lrPool2dGradient: function [source up kernel stride padding operation][
             ]
         ]
     ]
-    return lrMakeTensorOn source\shape data source\device
+    return lrMakeTensorLike source\shape data source
 ]
 
 lrParameterTrainable?: function [item][
@@ -538,7 +538,7 @@ backward: function [output][
         ]
         if op = 'abs [
             signData: map node\parents\0\value\data 'item -> (item > 0.0)? -> 1.0 -> (item < 0.0)? -> (0.0 - 1.0) -> 0.0
-            sign: lrMakeTensorOn node\parents\0\value\shape signData node\parents\0\value\device
+            sign: lrMakeTensorLike node\parents\0\value\shape signData node\parents\0\value
             contribution: lrTensorBinary up sign 'mul
             lrAccumulate node\parents\0 contribution
         ]
@@ -578,7 +578,7 @@ backward: function [output][
                     'data ++ probability * (up\data\[offset + classIndex] - dot)
                 ]
             ]]
-            contribution: lrMakeTensorOn probabilities\shape data probabilities\device
+            contribution: lrMakeTensorLike probabilities\shape data probabilities
             lrAccumulate node\parents\0 contribution
         ]
         if op = 'crossEntropy [
@@ -595,7 +595,7 @@ backward: function [output][
                 set data flatIndex (data\[flatIndex] - 1.0)
             ]
             scale: up\data\0 / samples
-            rawContribution: lrMakeTensorOn scores\shape data scores\device
+            rawContribution: lrMakeTensorLike scores\shape data scores
             contribution: lrTensorBinary rawContribution scale 'mul
             lrAccumulate node\parents\0 contribution
         ]

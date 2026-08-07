@@ -38,6 +38,16 @@ suite "device-aware storage" [
         assert -> 1.0 = value\data\0
     ]
 
+    test "round-trips float32 buffers with explicit dtype identity" [
+        value: tensor.dtype: 'float32 [1 2 3]
+        buffer: tensorBuffer value
+        restored: tensorFromBuffer [3] buffer
+        assert -> 'float32 = dtypeOf value
+        assert -> 'float32 = buffer\dtype
+        assert -> 'float32 = dtypeOf restored
+        assert -> [1.0 2.0 3.0] = restored\data
+    ]
+
     test "materializes backend storage once and only at a host boundary" [
         registerBackend 'lazyTest #[
             available: 'lrLazyTestAvailable
@@ -66,7 +76,7 @@ suite "device-aware storage" [
         unavailable?: throws? [tensor.device: 'gpu [1 2]]
         wrongCount: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: 'float64 count: 3 data: [1.0 2.0]]
         countRejected?: throws? [tensorFromBuffer [2] wrongCount]
-        wrongDtype: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: 'float32 count: 2 data: [1.0 2.0]]
+        wrongDtype: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: 'float16 count: 2 data: [1.0 2.0]]
         dtypeRejected?: throws? [tensorFromBuffer [2] wrongDtype]
         wrongVersion: #[format: "learn.buffer" version: "1.0" device: 'cpu dtype: 'float64 count: 2 data: [1.0 2.0]]
         versionRejected?: throws? [tensorFromBuffer [2] wrongVersion]
@@ -105,5 +115,22 @@ suite "device-aware storage" [
         assert -> 'cpu = data\nodes\result\device
         assert -> eager\data = cpu\data
         assert -> [6.0] = cpu\data
+    ]
+
+    test "preserves dtype metadata across graph and CPU execution" [
+        model: graph [
+            x: lrInputFrom tensor.dtype: 'float32 [0 0]
+            weight: parameter tensor.dtype: 'float32 [2 3]
+            prediction: x * weight
+            loss: mean prediction
+        ]
+        feed: #[x: tensor.dtype: 'float32 [1 2]]
+        data: graphData model
+        schedule: scheduleGraph data 'loss
+        result: executeCpu.with: feed schedule
+        assert -> 'float32 = data\nodes\x\dtype
+        assert -> 'float32 = data\nodes\weight\value\dtype
+        assert -> 'float32 = dtypeOf result
+        assert -> [4.0] = result\data
     ]
 ]

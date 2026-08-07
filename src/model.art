@@ -451,7 +451,7 @@ lrGraphNameOf: function [model sought][
 
 lrTensorData: function [value][
     source: lrAsTensor value
-    return #[shape: new source\shape device: source\device data: new source\data]
+    return #[shape: new source\shape device: source\device dtype: source\dtype data: new source\data]
 ]
 
 lrGraphNodeData: function [model name][
@@ -478,6 +478,7 @@ lrGraphNodeData: function [model name][
         operation: item\operation
         shape: new item\value\shape
         device: item\value\device
+        dtype: item\value\dtype
         parents: parentData
         context: contextData
         value: (role = 'parameter)? -> lrTensorData item\value -> null

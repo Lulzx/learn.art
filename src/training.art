@@ -213,7 +213,7 @@ lrTakeRows: function [value indices][
     outputShape: @[(size indices)]
     trailing: lrTrailingShape source\shape 1
     loop trailing 'dim -> 'outputShape ++ dim
-    return lrMakeTensorOn outputShape data source\device
+    return lrMakeTensorLike outputShape data source
 ]
 
 lrBatchOrder: function [count seed epoch shuffle][

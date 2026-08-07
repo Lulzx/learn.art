@@ -189,6 +189,9 @@ compileNativeCpu: function [schedule][
             compileResult: execute.code.args: compileArgs compiler
             if compileResult\code = 0 [
                 firstName: first group
+                outputNode: data\nodes\[plan\output]
+                outputDtype: 'float64
+                if key? outputNode 'dtype -> outputDtype: outputNode\dtype
                 set kernels firstName #[
                     library: libraryPath
                     symbol: "learn_kernel"
@@ -196,6 +199,7 @@ compileNativeCpu: function [schedule][
                     externalParents: plan\externalParents
                     output: plan\output
                     shape: new data\nodes\[plan\output]\shape
+                    dtype: outputDtype
                     source: sourcePath
                 ]
                 nativeCount: nativeCount + 1
@@ -220,6 +224,7 @@ compileNativeCpu: function [schedule][
 
 lrTensorCsv: function [value][
     source: lrAsTensor value
+    lrTensorHostData source
     csvParts: lrFreshBlock
     loop source\data 'item [
         textItem: to :string item
@@ -228,7 +233,7 @@ lrTensorCsv: function [value][
     return join.with: "," csvParts
 ]
 
-lrTensorFromCsv: function [dims content][
+lrTensorFromCsv: function [dims content dtype][
     spacedContent: replace content "," " "
     csvParts: to :block spacedContent
     csvValues: lrFreshBlock
@@ -236,7 +241,7 @@ lrTensorFromCsv: function [dims content][
         numericItem: to :floating item
         'csvValues ++ numericItem
     ]
-    return lrMakeTensor dims csvValues
+    return lrMakeTensorTypedOn dims csvValues 'cpu dtype
 ]
 
 lrExecuteNativeKernel: function [kernel environment][
@@ -250,7 +255,7 @@ lrExecuteNativeKernel: function [kernel environment][
     ]
     result: call.external: kernel\library .expect: :string kernel\symbol arguments
     if null? result -> panic "learn: native CPU kernel returned no data"
-    return lrTensorFromCsv kernel\shape result
+    return lrTensorFromCsv kernel\shape result kernel\dtype
 ]
 
 executeNativeCpu: function [artifact][

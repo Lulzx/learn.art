@@ -61,6 +61,16 @@ suite "model state and checkpoints" [
         assert -> [3.0] = model\b\value\data
     ]
 
+    test "rejects model state with a mismatched dtype" [
+        model: graph [w: parameter tensor.dtype: 'float32 [1 2]]
+        state: stateDict model
+        state\values\w\buffer\dtype: 'float64
+        rejected?: throws? [loadStateDict model state]
+        assert -> rejected?
+        assert -> 'float32 = dtypeOf model\w
+        assert -> [1.0 2.0] = model\w\value\data
+    ]
+
     test "round-trips portable checkpoint files" [
         model: graph [
             w: parameter tensor [[1 2] [3 4]]

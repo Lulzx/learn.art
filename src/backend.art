@@ -11,6 +11,7 @@ lrCpuBackendAvailable: function [][true]
 set lrBackendRegistry 'cpu #[
     name: 'cpu
     available: 'lrCpuBackendAvailable
+    dtypes: ['float32 'float64]
 ]
 
 registerBackend: function [requestedName descriptor][

@@ -19,7 +19,7 @@ lrExplainSpec: function [model callAttrs][
 
 lrGradientCopy: function [value][
     if null? value -> return null
-    return lrMakeTensorOn value\shape (lrTensorHostData value) value\device
+    return lrMakeTensorLike value\shape (lrTensorHostData value) value
 ]
 
 lrInputGradient: function [model feed spec][

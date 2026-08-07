@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.28 keeps compiled MPS inference and generic training results device-resident until an explicit host materialization boundary.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.29 adds explicit floating-point dtype identity and lazy read-only slice views without ambiguous device-storage ownership.
 
 ## Example
 
@@ -41,15 +41,17 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 - overloaded `+`, `-`, `*`, `/`, `^`, and unary `neg`
 - `shape`, `reshape`, `transpose`, `tensorAt`, `square`, `tensorSum`, `mean`, and `matmul`
 - `conv2d`, `maxPool2d`, and `avgPool2d` for NCHW tensors
-- `availableDevices`, `deviceOf`, `toDevice`, `hostMaterialized?`, `materializeTensor`, `tensorData`, `tensorBuffer`, and `tensorFromBuffer`
+- `availableDevices`, `deviceOf`, `dtypeOf`, `toDevice`, `toDtype`, `tensorSlice`, `hostMaterialized?`, `materializeTensor`, `tensorData`, `tensorBuffer`, and `tensorFromBuffer`
 
-Tensors contain owned floating-point `data`, inferred `shape`, and row-major `strides`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices.
+Tensors contain floating-point `data`, inferred `shape`, row-major `strides`, and an explicit `float32` or `float64` dtype. `tensor.dtype:` selects identity, `dtypeOf` inspects it, and `toDtype` creates an owned conversion. Mixed binary operations promote to `float64` when either operand is `float64`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices.
+
+`tensorSlice.axis:.start:.count:.step:` creates a lazy, read-only strided view. Views retain their source's device and dtype; materialization caches an owned projection, while eager arithmetic returns an ordinary owned tensor. The source owns any backend storage and must remain alive until an unmaterialized view is consumed.
 
 `matmul` follows the usual generalized rules: two vectors produce a scalar dot product, matrix–vector and vector–matrix products remove the promoted unit dimension, and rank-2-or-higher operands broadcast their leading batch dimensions. The same shapes and batch accumulation rules apply to reverse-mode gradients and scheduled CPU execution.
 
 `conv2d`, `maxPool2d`, and `avgPool2d` participate in reverse-mode differentiation, including overlapping windows, stride, and padding. Convolution produces gradients for both NCHW inputs and OIHW weights; max pooling routes each window to its first maximum, while average pooling divides across valid, unpadded elements.
 
-Every tensor carries an explicit device. CPU support is always registered; importing `src/metal-backend.art` adds `mps` on supported Apple silicon. `registerBackend`, `backendAvailable?`, and `availableDevices` expose the registry, while `releaseTensor` explicitly frees non-CPU storage. Device metadata survives graph export, optimization, and scheduled execution.
+Every tensor carries an explicit device and dtype. CPU supports `float32` and `float64`; importing `src/metal-backend.art` adds the native `float32` MPS device on supported Apple silicon. `registerBackend`, `backendAvailable?`, and `availableDevices` expose the registry, while `releaseTensor` explicitly frees owned non-CPU storage. Device and dtype metadata survive graph export, optimization, and scheduled CPU execution.
 
 Compiled device results are lazy on the host. `hostMaterialized?` distinguishes a resident-only result from one with a cached host mirror, `materializeTensor` fills that mirror once, and `tensorData` returns an owned host copy. `tensorBuffer`, eager CPU-style operations, and cross-device transfers materialize when their semantics require values. Shape and device inspection, release, and feeding an MPS result into another MPS executable do not download it.
 
@@ -183,4 +185,4 @@ arturo examples/compiled-mps-training.art
 arturo examples/mnist-mps.art
 ```
 
-The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Mixed dtypes, slice views, and mutation APIs remain outside the current milestone.
+The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Mutable aliases and backend-native strided views remain outside the current milestone.

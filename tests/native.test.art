@@ -3,10 +3,10 @@ import relative {../src/learn}!
 
 suite "native CPU lowering" [
     test "compiles an eligible fusion group and matches reference execution" [
-        xNode: lrInputFrom tensor [0.0 0.0 0.0]
+        xNode: lrInputFrom tensor.dtype: 'float32 [0.0 0.0 0.0]
         model: graph [
             x: xNode
-            w: parameter 2.0
+            w: parameter tensor.dtype: 'float32 2.0
             multiplied: x * w
             activated: sigmoid multiplied
             loss: mean activated
@@ -14,13 +14,15 @@ suite "native CPU lowering" [
         data: graphData model
         schedule: scheduleGraph data 'loss
         artifact: compileNativeCpu.directory: ".learn-native-test" schedule
-        feed: #[x: tensor [0.0 1.0 2.0]]
+        feed: #[x: tensor.dtype: 'float32 [0.0 1.0 2.0]]
         nativeResult: executeNativeCpu.with: feed artifact
         referenceResult: executeCpu.with: feed schedule
         difference: abs nativeResult\data\0 - referenceResult\data\0
         assert -> "learn.cpu.csv.v1" = artifact\abi
         assert -> artifact\native
         assert -> 1 = size keys artifact\kernels
+        assert -> 'float32 = dtypeOf nativeResult
+        assert -> 'float32 = dtypeOf referenceResult
         assert -> difference < 0.000000000001
     ]
 

@@ -31,6 +31,17 @@ define :learnTensor [
     string: method [][lrTensorString this]
 ]
 
+define :learnTensorView [
+    init: constructor [source shape axis start count step data device dtype]
+    add: method [that][lrTensorBinary this that 'add]
+    sub: method [that][lrTensorBinary this that 'sub]
+    mul: method [that][lrTensorBinary this that 'mul]
+    div: method [that][lrTensorBinary this that 'div]
+    pow: method [that][lrTensorBinary this that 'pow]
+    neg: method [][lrTensorUnary this 'neg]
+    string: method [][lrTensorViewString this]
+]
+
 define :learnInitializer [
     init: constructor [kind seed low high]
 ]
@@ -160,6 +171,32 @@ lrNormalizeDevice: function [requested][
     return device
 ]
 
+lrNormalizeDtype: function [requested][
+    dtype: requested
+    if string? dtype -> dtype: to :literal dtype
+    unless contains? ['float32 'float64] dtype -> panic ~"learn: tensor dtype |dtype| is unsupported"
+    return dtype
+]
+
+lrDefaultDtype: function [device][
+    descriptor: lrBackend device
+    if key? descriptor 'defaultDtype -> return lrNormalizeDtype descriptor\defaultDtype
+    return 'float64
+]
+
+lrValidateDeviceDtype: function [device dtype][
+    descriptor: lrBackend device
+    if key? descriptor 'dtypes [
+        unless contains? descriptor\dtypes dtype -> panic ~"learn: device |device| does not support dtype |dtype|"
+    ]
+    return dtype
+]
+
+lrPromoteDtype: function [left right][
+    if or? [left = 'float64][right = 'float64] -> return 'float64
+    return 'float32
+]
+
 lrInferShape: function [source][
     if lrNumeric? source -> return lrFreshBlock
     unless block? source -> panic ~"learn: tensor values must be numeric or nested blocks, got |type source|"
@@ -189,8 +226,14 @@ lrMakeTensor: function [dims data][
 ]
 
 lrMakeTensorOn: function [dims data requestedDevice][
+    device: lrNormalizeDevice requestedDevice
+    return lrMakeTensorTypedOn dims data device (lrDefaultDtype device)
+]
+
+lrMakeTensorTypedOn: function [dims data requestedDevice requestedDtype][
     lrValidateShape dims
     device: lrNormalizeDevice requestedDevice
+    dtype: lrValidateDeviceDtype device (lrNormalizeDtype requestedDtype)
     unless (lrCount dims) = (size data) ->
         panic ~"learn: shape |dims| requires |lrCount dims| values, got |size data|"
 
@@ -198,10 +241,15 @@ lrMakeTensorOn: function [dims data requestedDevice][
     loop data 'item -> 'floats ++ lrFloat item
     storage: null
     unless device = 'cpu -> storage: lrBackendCall device 'upload @[dims floats]
-    return lrMakeTensorWithStorage dims floats device storage
+    return lrMakeTensorTypedWithStorage dims floats device dtype storage
 ]
 
 lrMakeTensorWithStorage: function [dims data device storage][
+    return lrMakeTensorTypedWithStorage dims data device (lrDefaultDtype device) storage
+]
+
+lrMakeTensorTypedWithStorage: function [dims data device dtype storage][
+    normalizedDtype: lrValidateDeviceDtype device (lrNormalizeDtype dtype)
     args: lrArgs 5
     set args 0 new dims
     set args 1 lrStrides dims
@@ -217,11 +265,34 @@ lrMakeTensorWithStorage: function [dims data device storage][
     unless null? data -> ownedData: new data
     set result 'data ownedData
     set result 'device device
+    set result 'dtype normalizedDtype
     set result 'storage storage
     return result
 ]
 
+lrMakeTensorLike: function [dims data source][
+    return lrMakeTensorTypedOn dims data source\device source\dtype
+]
+
+lrTensorViewHostData: function [view][
+    if (size view\data) = (lrCount view\shape) -> return view\data
+    sourceData: lrTensorHostData view\source
+    sourceShape: view\source\shape
+    output: lrFreshBlock
+    count: lrCount view\shape
+    if count > 0 [loop 0..(count - 1) 'outputIndex [
+        coordinates: lrCoordinates view\shape outputIndex
+        sourceCoordinates: new coordinates
+        set sourceCoordinates view\axis (view\start + (coordinates\[view\axis] * view\step))
+        sourceIndex: lrFlatIndex sourceShape sourceCoordinates
+        'output ++ sourceData\[sourceIndex]
+    ]]
+    view\data: output
+    return view\data
+]
+
 hostMaterialized?: function [value][
+    if is? :learnTensorView value -> return (size value\data) = (lrCount value\shape)
     source: (is? :learnValue value)? -> value\value -> lrAsTensor value
     return (size source\data) = (lrCount source\shape)
 ]
@@ -241,18 +312,30 @@ lrTensorHostData: function [value][
 ]
 
 materializeTensor: function [value][
+    if is? :learnTensorView value [
+        lrTensorViewHostData value
+        return value
+    ]
     source: (is? :learnValue value)? -> value\value -> lrAsTensor value
     lrTensorHostData source
     return source
 ]
 
 tensorData: function [value][
+    if is? :learnTensorView value [
+        viewData: lrTensorViewHostData value
+        return new viewData
+    ]
     source: (is? :learnValue value)? -> value\value -> lrAsTensor value
     hostData: lrTensorHostData source
     return new hostData
 ]
 
 releaseTensor: function [value][
+    if is? :learnTensorView value [
+        value\data: lrFreshBlock
+        return null
+    ]
     source: (is? :learnValue value)? -> value\value -> lrAsTensor value
     unless null? source\storage [
         lrBackendCall source\device 'release @[source\storage]
@@ -274,6 +357,9 @@ tensor: function [source][
     callAttrs: attrs
     requestedDevice: 'cpu
     if key? callAttrs 'device -> requestedDevice: lrNormalizeDevice callAttrs\device
+    requestedDtype: lrDefaultDtype requestedDevice
+    if key? callAttrs 'dtype -> requestedDtype: lrNormalizeDtype callAttrs\dtype
+    lrValidateDeviceDtype requestedDevice requestedDtype
     makeZeros: key? callAttrs 'zeros
     makeOnes: key? callAttrs 'ones
     makeRandom: key? callAttrs 'random
@@ -291,34 +377,53 @@ tensor: function [source][
                 'data ++ value
             ]
         ]
-        return lrMakeTensorOn dims data requestedDevice
+        return lrMakeTensorTypedOn dims data requestedDevice requestedDtype
     ]
     result: lrTensorFromData source
-    return lrMakeTensorOn result\shape result\data requestedDevice
+    return lrMakeTensorTypedOn result\shape result\data requestedDevice requestedDtype
 ]
 
 lrAsTensor: function [value][
     if is? :learnTensor value -> return value
+    if is? :learnTensorView value -> return lrMakeTensorTypedOn value\shape (lrTensorViewHostData value) value\device value\dtype
     if lrNumeric? value -> return lrTensorFromData value
     panic ~"learn: expected a tensor or number, got |type value|"
 ]
 
 shape: function [value][
     if is? :learnTensor value -> return new value\shape
+    if is? :learnTensorView value -> return new value\shape
     if is? :learnValue value -> return new value\value\shape
     panic ~"learn: shape expects a tensor or differentiable value, got |type value|"
 ]
 
 deviceOf: function [value][
     if is? :learnTensor value -> return value\device
+    if is? :learnTensorView value -> return value\device
     if is? :learnValue value -> return value\value\device
     panic ~"learn: deviceOf expects a tensor or differentiable value, got |type value|"
+]
+
+dtypeOf: function [value][
+    if is? :learnTensor value -> return value\dtype
+    if is? :learnTensorView value -> return value\dtype
+    if is? :learnValue value -> return value\value\dtype
+    panic ~"learn: dtypeOf expects a tensor or differentiable value, got |type value|"
+]
+
+toDtype: function [value requestedDtype][
+    source: lrAsTensor value
+    dtype: lrValidateDeviceDtype source\device (lrNormalizeDtype requestedDtype)
+    return lrMakeTensorTypedOn source\shape (lrTensorHostData source) source\device dtype
 ]
 
 lrTensorTransfer: function [value requestedDevice][
     source: lrAsTensor value
     device: lrNormalizeDevice requestedDevice
-    return lrMakeTensorOn source\shape (lrTensorHostData source) device
+    dtype: source\dtype
+    descriptor: lrBackend device
+    if and? [key? descriptor 'dtypes][not? contains? descriptor\dtypes dtype] -> dtype: lrDefaultDtype device
+    return lrMakeTensorTypedOn source\shape (lrTensorHostData source) device dtype
 ]
 
 toDevice: function [value requestedDevice][
@@ -327,13 +432,24 @@ toDevice: function [value requestedDevice][
 ]
 
 tensorBuffer: function [value][
+    if is? :learnTensorView value [
+        viewData: lrTensorViewHostData value
+        return #[
+            format: "learn.buffer"
+            version: "0.9"
+            device: value\device
+            dtype: value\dtype
+            count: size viewData
+            data: new viewData
+        ]
+    ]
     source: (is? :learnValue value)? -> value\value -> lrAsTensor value
     hostData: lrTensorHostData source
     return #[
         format: "learn.buffer"
         version: "0.9"
         device: source\device
-        dtype: 'float64
+        dtype: source\dtype
         count: size hostData
         data: new hostData
     ]
@@ -347,12 +463,62 @@ tensorFromBuffer: function [dims buffer][
         unless key? buffer field -> panic ~"learn: tensor buffer is missing |field|"
     ]
     unless buffer\version = "0.9" -> panic ~"learn: tensor buffer version |buffer\version| is unsupported"
-    unless buffer\dtype = 'float64 -> panic ~"learn: tensor buffer dtype |buffer\dtype| is unsupported"
+    dtype: lrNormalizeDtype buffer\dtype
     unless block? buffer\data -> panic "learn: tensor buffer data must be a block"
     unless and? [integer? buffer\count][buffer\count >= 0] -> panic "learn: tensor buffer count must be a non-negative integer"
     unless buffer\count = (size buffer\data) -> panic "learn: tensor buffer count does not match its data"
     unless buffer\count = (lrCount dims) -> panic ~"learn: shape |dims| does not match buffer count |buffer\count|"
-    return lrMakeTensorOn dims buffer\data buffer\device
+    return lrMakeTensorTypedOn dims buffer\data buffer\device dtype
+]
+
+tensorSlice: function [value][
+    callAttrs: attrs
+    source: value
+    unless or? [is? :learnTensor source][is? :learnTensorView source] -> source: lrAsTensor source
+    rank: size source\shape
+    if rank = 0 -> panic "learn: tensorSlice requires a non-scalar tensor"
+    axis: lrNormalizeAxis 0 rank
+    start: 0
+    sliceCount: null
+    step: 1
+    if key? callAttrs 'axis -> axis: lrNormalizeAxis callAttrs\axis rank
+    if key? callAttrs 'start -> start: callAttrs\start
+    if key? callAttrs 'count -> sliceCount: callAttrs\count
+    if key? callAttrs 'step -> step: callAttrs\step
+    unless and? [integer? start][integer? step] -> panic "learn: tensorSlice start and step must be integers"
+    unless step > 0 -> panic "learn: tensorSlice step must be positive"
+    extent: source\shape\[axis]
+    if start < 0 -> start: start + extent
+    unless and? [start >= 0][start =< extent] -> panic "learn: tensorSlice start is out of bounds"
+    sliceAvailable: 0
+    if start < extent [
+        remaining: extent - start
+        lastOffset: remaining - 1
+        completeSteps: to :integer floor (lastOffset / step)
+        sliceAvailable: 1 + completeSteps
+    ]
+    if null? sliceCount -> sliceCount: sliceAvailable
+    unless and? [integer? sliceCount][and? [sliceCount >= 0][sliceCount =< sliceAvailable]] -> panic "learn: tensorSlice count is out of bounds"
+    dims: new source\shape
+    set dims axis sliceCount
+    args: lrArgs 9
+    set args 0 source
+    set args 1 dims
+    set args 2 axis
+    set args 3 start
+    set args 4 sliceCount
+    set args 5 step
+    set args 6 lrFreshBlock
+    set args 7 source\device
+    set args 8 source\dtype
+    result: to :learnTensorView args
+    set result 'shape new dims
+    set result 'data lrFreshBlock
+    return result
+]
+
+lrTensorViewString: function [view][
+    return ~"tensor view(shape: |view\shape|, device: |view\device|, dtype: |view\dtype|)"
 ]
 
 lrBroadcastShape: function [left right][
@@ -432,7 +598,7 @@ tensorAt: function [value indices][
     if and? [integer? indices][(size source\shape) = 1] -> coordinates: @[indices]
     unless block? coordinates -> panic "learn: tensorAt expects an index block"
     offset: lrFlatIndex source\shape coordinates
-    return lrMakeTensorOn [] @[source\data\[offset]] source\device
+    return lrMakeTensorLike [] @[source\data\[offset]] source
 ]
 
 lrTensorBinary: function [left right operation][
@@ -459,7 +625,8 @@ lrTensorBinary: function [left right operation][
             'data ++ value
         ]
     ]
-    return lrMakeTensorOn dims data a\device
+    dtype: lrPromoteDtype a\dtype b\dtype
+    return lrMakeTensorTypedOn dims data a\device dtype
 ]
 
 lrTensorUnary: function [value operation][
@@ -490,7 +657,7 @@ lrTensorUnary: function [value operation][
         if null? result -> panic ~"learn: unknown unary tensor operation |operation|"
         'data ++ result
     ]
-    return lrMakeTensorOn source\shape data source\device
+    return lrMakeTensorLike source\shape data source
 ]
 
 lrSoftmaxSpec: function [source][
@@ -522,7 +689,7 @@ lrTensorSoftmax: function [value][
         ]
         loop exponentials 'item -> 'output ++ item / denominator
     ]]
-    return lrMakeTensorOn source\shape output source\device
+    return lrMakeTensorLike source\shape output source
 ]
 
 lrClassIndex: function [value classes][
@@ -565,7 +732,7 @@ lrTensorCrossEntropy: function [logitsValue targetsValue][
         logNormalizer: maximum + ln exponentialSum
         total: total + logNormalizer - logits\data\[offset + targetIndex]
     ]
-    return lrMakeTensorOn [] @[total / samples] logits\device
+    return lrMakeTensorLike [] @[total / samples] logits
 ]
 
 lrImagePair: function [value fallback][
@@ -643,7 +810,8 @@ lrTensorConv2d: function [inputValue weightValue strideValue paddingValue][
             ]
         ]
     ]
-    return lrMakeTensorOn @[batches outputs outputHeight outputWidth] outputData source\device
+    dtype: lrPromoteDtype source\dtype weights\dtype
+    return lrMakeTensorTypedOn @[batches outputs outputHeight outputWidth] outputData source\device dtype
 ]
 
 lrTensorPool2d: function [inputValue kernelValue strideValue paddingValue operation][
@@ -695,7 +863,7 @@ lrTensorPool2d: function [inputValue kernelValue strideValue paddingValue operat
             ]
         ]
     ]
-    return lrMakeTensorOn @[batches channels outputHeight outputWidth] outputData source\device
+    return lrMakeTensorLike @[batches channels outputHeight outputWidth] outputData source
 ]
 
 conv2d: function [inputValue weights][
@@ -736,7 +904,7 @@ reshape: function [value dims][
     lrValidateShape dims
     unless (lrCount dims) = (size source\data) ->
         panic ~"learn: cannot reshape |source\shape| to |dims|"
-    return lrMakeTensorOn dims source\data source\device
+    return lrMakeTensorLike dims source\data source
 ]
 
 lrTransposeAxes: function [dims requestedAxes][
@@ -791,7 +959,7 @@ transpose: function [value][
             'data ++ source\data\[sourceIndex]
         ]
     ]
-    return lrMakeTensorOn outputShape data source\device
+    return lrMakeTensorLike outputShape data source
 ]
 
 tensorSum: function [value][
@@ -802,7 +970,7 @@ tensorSum: function [value][
     unless null? requestedAxis -> return lrTensorReduceAxis source requestedAxis 'sum
     total: 0.0
     loop source\data 'item -> total: total + item
-    return lrMakeTensorOn [] @[total] source\device
+    return lrMakeTensorLike [] @[total] source
 ]
 
 mean: function [value][
@@ -814,7 +982,7 @@ mean: function [value][
     if empty? source\data -> panic "learn: mean is undefined for an empty tensor"
     total: 0.0
     loop source\data 'item -> total: total + item
-    return lrMakeTensorOn [] @[total / size source\data] source\device
+    return lrMakeTensorLike [] @[total / size source\data] source
 ]
 
 lrTensorReduceAxis: function [source requestedAxis operation][
@@ -842,7 +1010,7 @@ lrTensorReduceAxis: function [source requestedAxis operation][
         divisor: source\shape\[axis]
         outputData: map outputData 'item -> item / divisor
     ]
-    return lrMakeTensorOn outputShape outputData source\device
+    return lrMakeTensorLike outputShape outputData source
 ]
 
 square: function [value][
@@ -884,7 +1052,7 @@ lrDropoutTensor: function [value context][
     lrTensorHostData source
     unless context\training [
         context\mask: lrOnesLike source
-        return lrMakeTensorOn source\shape source\data source\device
+        return lrMakeTensorLike source\shape source\data source
     ]
     context\pass: context\pass + 1
     state: context\seed + (context\pass * 104729) + 1
@@ -896,7 +1064,7 @@ lrDropoutTensor: function [value context][
         maskValue: (fraction >= context\rate)? -> scale -> 0.0
         'maskData ++ maskValue
     ]
-    mask: lrMakeTensorOn source\shape maskData source\device
+    mask: lrMakeTensorLike source\shape maskData source
     context\mask: mask
     return lrTensorBinary source mask 'mul
 ]
@@ -976,7 +1144,7 @@ classPrediction: function [logitsValue][
         'predictions ++ to :floating bestIndex
     ]]
     outputShape: lrLeadingShape logits\shape 1
-    return lrMakeTensorOn outputShape predictions logits\device
+    return lrMakeTensorLike outputShape predictions logits
 ]
 
 multiclassAccuracy: function [actual predicted][
@@ -1095,7 +1263,8 @@ matmul: function [left right][
             ]
         ]
     ]
-    return lrMakeTensorOn spec\outputShape data a\device
+    dtype: lrPromoteDtype a\dtype b\dtype
+    return lrMakeTensorTypedOn spec\outputShape data a\device dtype
 ]
 
 lrTensorString: function [value][

@@ -69,7 +69,9 @@ commonSubexpressions: function [data][
             if key? node 'context -> context: node\context
             device: 'cpu
             if key? node 'device -> device: node\device
-            signature: to :string @[node\operation node\shape device node\parents context]
+            dtype: 'float64
+            if key? node 'dtype -> dtype: node\dtype
+            signature: to :string @[node\operation node\shape device dtype node\parents context]
             names: lrFreshBlock
             if key? buckets signature -> names: new buckets\[signature]
             'names ++ name
@@ -86,7 +88,9 @@ lrTensorFromRecord: function [record][
         panic "learn: malformed tensor record in graph data"
     device: 'cpu
     if key? record 'device -> device: record\device
-    return lrMakeTensorOn record\shape record\data device
+    dtype: lrDefaultDtype device
+    if key? record 'dtype -> dtype: record\dtype
+    return lrMakeTensorTypedOn record\shape record\data device dtype
 ]
 
 lrParentValue: function [environment parent][
@@ -161,11 +165,14 @@ lrNodeWithParents: function [node nextParents][
     if key? node 'context -> context: node\context
     device: 'cpu
     if key? node 'device -> device: node\device
+    dtype: 'float64
+    if key? node 'dtype -> dtype: node\dtype
     return #[
         role: node\role
         operation: node\operation
         shape: new node\shape
         device: device
+        dtype: dtype
         parents: nextParents
         context: context
         value: node\value
@@ -212,6 +219,7 @@ constantFold: function [data][
                     operation: 'constant
                     shape: new foldedValue\shape
                     device: foldedValue\device
+                    dtype: foldedValue\dtype
                     parents: lrFreshBlock
                     context: null
                     value: lrTensorData foldedValue
@@ -245,7 +253,9 @@ eliminateCommonSubexpressions: function [data][
             if key? node 'context -> context: node\context
             device: 'cpu
             if key? node 'device -> device: node\device
-            signature: to :string @[node\operation node\shape device nextParents context]
+            dtype: 'float64
+            if key? node 'dtype -> dtype: node\dtype
+            signature: to :string @[node\operation node\shape device dtype nextParents context]
             if key? signatures signature [
                 canonical: signatures\[signature]
                 set aliases name canonical
@@ -254,6 +264,7 @@ eliminateCommonSubexpressions: function [data][
                     operation: 'alias
                     shape: new node\shape
                     device: device
+                    dtype: dtype
                     parents: @[canonical]
                     context: null
                     value: null

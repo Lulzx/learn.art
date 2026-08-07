@@ -8,7 +8,10 @@ suite "Metal backend" [
         assert -> contains? devices 'cpu
         assert -> contains? devices 'mps
         assert -> 'mps = deviceOf value
+        assert -> 'float32 = dtypeOf value
         assert -> not? null? value\storage
+        unsupported?: throws? [tensor.device: 'mps.dtype: 'float64 [1.0]]
+        assert -> unsupported?
         releaseTensor value
         assert -> null? value\storage
     ]
@@ -34,6 +37,7 @@ suite "Metal backend" [
         firstGpu: executeMps.with: firstFeed artifact
         secondGpu: executeMps.with: secondFeed artifact
         assert -> empty? firstGpu\data
+        assert -> 'float32 = dtypeOf firstGpu
         firstGpu: materializeTensor firstGpu
         secondGpu: materializeTensor secondGpu
         firstDelta: firstCpu\data\0 - firstGpu\data\0

@@ -149,7 +149,10 @@ mpsTrainingModelState: function [artifact][
     loop artifact\parameterNames 'parameterName [
         storage: artifact\parameterStorage\[parameterName]
         data: metalDownload storage
-        buffer: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: 'float64 count: size data data: data]
+        parameterNode: artifact\schedule\graph\nodes\[parameterName]
+        dtype: 'float64
+        if key? parameterNode 'dtype -> dtype: parameterNode\dtype
+        buffer: #[format: "learn.buffer" version: "0.9" device: 'cpu dtype: dtype count: size data data: data]
         set valuesByName parameterName #[shape: new storage\shape buffer: buffer]
     ]
     return #[format: "learn.state" version: "0.10" parameters: new artifact\parameterNames values: valuesByName]
@@ -179,6 +182,10 @@ loadMpsTrainingModelState: function [artifact state][
         expectedShape: artifact\parameterStorage\[parameterName]\shape
         unless entry\shape = expectedShape -> panic ~"learn: MPS model state shape for |parameterName| does not match"
         restored: tensorFromBuffer entry\shape entry\buffer
+        parameterNode: artifact\schedule\graph\nodes\[parameterName]
+        expectedDtype: 'float64
+        if key? parameterNode 'dtype -> expectedDtype: parameterNode\dtype
+        unless restored\dtype = expectedDtype -> panic ~"learn: MPS model state dtype for |parameterName| does not match"
         set staged parameterName lrMetalUpload restored\shape (lrTensorHostData restored)
     ]
     loop artifact\parameterNames 'parameterName [

@@ -70,6 +70,8 @@ lrValidateState: function [model state strict][
             restoredValue: tensorFromBuffer entry\shape entry\buffer
             unless restoredValue\device = parameter\value\device ->
                 panic ~"learn: model state device |restoredValue\device| does not match parameter |name| device |parameter\value\device|"
+            unless restoredValue\dtype = parameter\value\dtype ->
+                panic ~"learn: model state dtype |restoredValue\dtype| does not match parameter |name| dtype |parameter\value\dtype|"
             set restored name restoredValue
         ]
     ]
@@ -147,6 +149,7 @@ lrRestoreSlotList: function [optimizer entries slotName][
             unless entry\shape = param\value\shape -> panic ~"learn: optimizer slot |slotName| shape does not match parameter |slotIndex|"
             restoredValue: tensorFromBuffer entry\shape entry\buffer
             unless restoredValue\device = param\value\device -> panic ~"learn: optimizer slot |slotName| device does not match parameter |slotIndex|"
+            unless restoredValue\dtype = param\value\dtype -> panic ~"learn: optimizer slot |slotName| dtype does not match parameter |slotIndex|"
             'restored ++ @[restoredValue]
         ]
     ]

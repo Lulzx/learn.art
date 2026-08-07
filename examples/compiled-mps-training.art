@@ -15,7 +15,12 @@ do [
     artifact: compileTraining model 'loss optimizer
     feed: #[x: tensor [[1.0 2.0] [3.0 4.0]] y: tensor [[0.0] [0.0]]]
 
-    loop 1..80 'unused -> executeMpsTraining.with: feed artifact
-    print executeMpsTraining.with: feed artifact
+    loop 1..80 'unused [
+        result: executeMpsTraining.with: feed artifact
+        releaseTensor result
+    ]
+    result: executeMpsTraining.with: feed artifact
+    print mpsTrainingLoss result
+    releaseTensor result
     releaseMpsTraining artifact
 ]

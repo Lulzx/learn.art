@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.27 adds eager NCHW convolution and pooling derivatives and trains convolution graphs through the generic [`arturo-metal`](https://github.com/Lulzx/arturo-metal) compiler.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.28 keeps compiled MPS inference and generic training results device-resident until an explicit host materialization boundary.
 
 ## Example
 
@@ -41,7 +41,7 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 - overloaded `+`, `-`, `*`, `/`, `^`, and unary `neg`
 - `shape`, `reshape`, `transpose`, `tensorAt`, `square`, `tensorSum`, `mean`, and `matmul`
 - `conv2d`, `maxPool2d`, and `avgPool2d` for NCHW tensors
-- `availableDevices`, `deviceOf`, `toDevice`, `tensorBuffer`, and `tensorFromBuffer`
+- `availableDevices`, `deviceOf`, `toDevice`, `hostMaterialized?`, `materializeTensor`, `tensorData`, `tensorBuffer`, and `tensorFromBuffer`
 
 Tensors contain owned floating-point `data`, inferred `shape`, and row-major `strides`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices.
 
@@ -50,6 +50,8 @@ Tensors contain owned floating-point `data`, inferred `shape`, and row-major `st
 `conv2d`, `maxPool2d`, and `avgPool2d` participate in reverse-mode differentiation, including overlapping windows, stride, and padding. Convolution produces gradients for both NCHW inputs and OIHW weights; max pooling routes each window to its first maximum, while average pooling divides across valid, unpadded elements.
 
 Every tensor carries an explicit device. CPU support is always registered; importing `src/metal-backend.art` adds `mps` on supported Apple silicon. `registerBackend`, `backendAvailable?`, and `availableDevices` expose the registry, while `releaseTensor` explicitly frees non-CPU storage. Device metadata survives graph export, optimization, and scheduled execution.
+
+Compiled device results are lazy on the host. `hostMaterialized?` distinguishes a resident-only result from one with a cached host mirror, `materializeTensor` fills that mirror once, and `tensorData` returns an owned host copy. `tensorBuffer`, eager CPU-style operations, and cross-device transfers materialize when their semantics require values. Shape and device inspection, release, and feeding an MPS result into another MPS executable do not download it.
 
 ## Autograd and models
 
@@ -140,10 +142,12 @@ For a generic graph, import `src/metal-autodiff.art` and compile the same model 
 ```arturo
 optimizer: momentum.rate: 0.01.beta: 0.9 (parameters model)
 artifact: compileTraining model 'loss optimizer
-loss: executeMpsTraining.with: #[x: features y: targets] artifact
+result: executeMpsTraining.with: #[x: features y: targets] artifact
+loss: mpsTrainingLoss result
+releaseTensor result
 ```
 
-The pipeline is ordinary data: `differentiateGraph graphData 'loss` appends automatic-gradient nodes, and `optimizerGraph differentiated optimizer` appends parameter and optimizer-state updates. `compileTraining` performs those transformations and lowers the complete graph to one reusable MPSGraph executable. Parameters and momentum slots remain on the GPU; `mpsTrainingModelState` and `mpsTrainingOptimizerState` are explicit host materialization boundaries.
+The pipeline is ordinary data: `differentiateGraph graphData 'loss` appends automatic-gradient nodes, and `optimizerGraph differentiated optimizer` appends parameter and optimizer-state updates. `compileTraining` performs those transformations and lowers the complete graph to one reusable MPSGraph executable. Parameters and momentum slots remain on the GPU; the returned loss tensor is lazy until `mpsTrainingLoss`, `tensorData`, or another host boundary is used. `mpsTrainingModelState` and `mpsTrainingOptimizerState` remain explicit checkpoint materialization boundaries.
 
 Import `src/metal-training.art` and create `mpsMlpTrainer.rate:.seed: batch input hidden classes`. Its compiled program performs the dense forward pass, cross-entropy backward pass, ReLU gradient, SGD update, and next-step parameter handoff on MPSGraph. Only the scalar loss is downloaded during training; `mpsMlpState` is an explicit checkpoint boundary.
 

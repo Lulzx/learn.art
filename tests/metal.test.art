@@ -33,6 +33,9 @@ suite "Metal backend" [
         artifact: compileMps schedule
         firstGpu: executeMps.with: firstFeed artifact
         secondGpu: executeMps.with: secondFeed artifact
+        assert -> empty? firstGpu\data
+        firstGpu: materializeTensor firstGpu
+        secondGpu: materializeTensor secondGpu
         firstDelta: firstCpu\data\0 - firstGpu\data\0
         secondDelta: secondCpu\data\0 - secondGpu\data\0
         firstDifference: abs firstDelta
@@ -62,6 +65,7 @@ suite "Metal backend" [
         cpu: executeCpu.with: feed schedule
         artifact: compileMps schedule
         gpu: executeMps.with: feed artifact
+        gpu: materializeTensor gpu
         delta: cpu\data\0 - gpu\data\0
         difference: abs delta
         assert -> difference < 0.00001
@@ -83,6 +87,8 @@ suite "Metal backend" [
         cpu: executeCpu.with: feed schedule
         artifact: compileMps schedule
         gpu: executeMps.with: feed artifact
+        assert -> empty? gpu\data
+        gpu: materializeTensor gpu
         delta: cpu\data\0 - gpu\data\0
         assert -> (abs delta) < 0.00001
         assert -> [1 1 1 1] = gpu\shape

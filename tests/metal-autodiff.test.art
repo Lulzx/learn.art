@@ -26,11 +26,17 @@ suite "compiled MPS automatic differentiation" [
         assert -> 'sub = trainingData\nodes\[parameterUpdateName]\operation
         assert -> 'optimizer = trainingData\nodes\[velocityName]\role
         artifact: compileTraining model 'loss optimizer
-        initialLoss: executeMpsTraining.with: feed artifact
+        initialResult: executeMpsTraining.with: feed artifact
+        assert -> empty? initialResult\data
+        initialLoss: mpsTrainingLoss initialResult
+        assert -> not? empty? initialResult\data
+        releaseTensor initialResult
         finalLoss: initialLoss
         stepIndex: 0
         while [stepIndex < 80][
-            finalLoss: executeMpsTraining.with: feed artifact
+            stepResult: executeMpsTraining.with: feed artifact
+            finalLoss: mpsTrainingLoss stepResult
+            releaseTensor stepResult
             stepIndex: stepIndex + 1
         ]
         modelState: mpsTrainingModelState artifact
@@ -60,11 +66,13 @@ suite "compiled MPS automatic differentiation" [
         optimizer: sgd.rate: 0.05 (parameters model)
         artifact: compileTraining model 'loss optimizer
         feed: #[x: tensor [1.0 2.0]]
-        loss: executeMpsTraining.with: feed artifact
+        result: executeMpsTraining.with: feed artifact
+        loss: mpsTrainingLoss result
         optimizerState: mpsTrainingOptimizerState artifact
         assert -> loss > 0.0
         assert -> 'sgd = optimizerState\kind
         assert -> empty? optimizerState\velocities
+        releaseTensor result
         releaseMpsTraining artifact
     ]
 
@@ -81,9 +89,15 @@ suite "compiled MPS automatic differentiation" [
         optimizer: sgd.rate: 0.0001 (parameters model)
         artifact: compileTraining model 'loss optimizer
         feed: #[image: tensor [[[[1 2 3] [4 5 6] [7 8 9]]]] target: tensor [[[[0 0] [0 0]]]]]
-        initialLoss: executeMpsTraining.with: feed artifact
+        initialResult: executeMpsTraining.with: feed artifact
+        initialLoss: mpsTrainingLoss initialResult
+        releaseTensor initialResult
         finalLoss: initialLoss
-        loop 1..20 'unused -> finalLoss: executeMpsTraining.with: feed artifact
+        loop 1..20 'unused [
+            stepResult: executeMpsTraining.with: feed artifact
+            finalLoss: mpsTrainingLoss stepResult
+            releaseTensor stepResult
+        ]
         assert -> finalLoss < initialLoss
         releaseMpsTraining artifact
     ]

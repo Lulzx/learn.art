@@ -198,6 +198,7 @@ lrTrailingShape: function [dims startAxis][
 
 lrTakeRows: function [value indices][
     source: lrAsTensor value
+    lrTensorHostData source
     unless block? indices -> panic "learn: row indices must be a block"
     rows: lrDatasetRows source "tensor"
     rowWidth: (rows = 0)? -> lrCount lrLeadingShape source\shape 1 -> (size source\data) / rows

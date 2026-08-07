@@ -13,12 +13,12 @@ define :learnMpsMnist [
 lrMpsInitialParameter: function [dims kind seed][
     spec: initializer.seed: seed kind
     value: initializeTensor spec dims
-    return lrMetalUpload value\shape value\data
+    return lrMetalUpload value\shape (lrTensorHostData value)
 ]
 
 lrMpsInitialZeros: function [dims][
     value: tensor.zeros dims
-    return lrMetalUpload value\shape value\data
+    return lrMetalUpload value\shape (lrTensorHostData value)
 ]
 
 lrMpsMlpTrainingProgram: function [batchSize inputSize hiddenSize classCount][

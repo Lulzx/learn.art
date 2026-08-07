@@ -27,7 +27,8 @@
 - v0.25: GPU-resident MLP training, direct IDX-backed MNIST execution, and NCHW convolution/pooling schedules.
 - v0.26: ordinary-data differentiation and optimizer graph transforms compiled as generic MPSGraph training programs.
 - v0.27: eager convolution/pooling reverse kernels and generic compiled convolution training on MPSGraph.
+- v0.28: lazy host materialization for device-resident tensors and compiled training results.
 
 ## Next
 
-The next coherent milestone is lazy host materialization for GPU tensors and training results.
+The next coherent milestone is broader dtype and view support without weakening device ownership.

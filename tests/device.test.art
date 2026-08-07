@@ -1,6 +1,18 @@
 import'unitt!
 import relative {../src/learn}!
 
+lrLazyTestState: #[downloads: 0]
+
+lrLazyTestAvailable: function [][true]
+lrLazyTestDownload: function [storage][
+    lrLazyTestState\downloads: lrLazyTestState\downloads + 1
+    return new storage\data
+]
+lrLazyTestRelease: function [storage][
+    storage\released: true
+    return null
+]
+
 suite "device-aware storage" [
     test "places tensors explicitly on CPU" [
         value: tensor.device: 'cpu [[1 2] [3 4]]
@@ -24,6 +36,30 @@ suite "device-aware storage" [
         assert -> 4 = buffer\count
         assert -> [1.0 2.0 3.0 4.0] = restored\data
         assert -> 1.0 = value\data\0
+    ]
+
+    test "materializes backend storage once and only at a host boundary" [
+        registerBackend 'lazyTest #[
+            available: 'lrLazyTestAvailable
+            download: 'lrLazyTestDownload
+            release: 'lrLazyTestRelease
+        ]
+        storage: #[data: [3.0 4.0] released: false]
+        value: lrMakeTensorWithStorage [2] null 'lazyTest storage
+        beforeMaterialization: hostMaterialized? value
+        assert -> not? beforeMaterialization
+        firstCopy: tensorData value
+        set firstCopy 0 99.0
+        secondCopy: tensorData value
+        afterMaterialization: hostMaterialized? value
+        assert -> afterMaterialization
+        assert -> 1 = lrLazyTestState\downloads
+        assert -> [3.0 4.0] = secondCopy
+        buffer: tensorBuffer value
+        assert -> 1 = lrLazyTestState\downloads
+        assert -> [3.0 4.0] = buffer\data
+        releaseTensor value
+        assert -> storage\released
     ]
 
     test "rejects unavailable devices and malformed buffers" [

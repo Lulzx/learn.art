@@ -119,7 +119,7 @@ executeMpsTraining: function [artifact][
     temporaries: lrFreshBlock
     runtimeFeeds: lrMpsTrainingRuntimeFeeds artifact supplied temporaries
     results: metalRun.with: runtimeFeeds artifact\program
-    lossValues: metalDownload results\0
+    lossStorage: results\0
 
     resultIndex: 1
     loop artifact\parameterNames 'parameterName [
@@ -132,9 +132,14 @@ executeMpsTraining: function [artifact][
         set artifact\optimizerStorage optimizerName results\[resultIndex]
         resultIndex: resultIndex + 1
     ]
-    metalRelease results\0
     loop temporaries 'temporary -> metalRelease temporary
-    return lossValues\0
+    return lrMakeTensorWithStorage lossStorage\shape null 'mps lossStorage
+]
+
+mpsTrainingLoss: function [result][
+    source: lrAsTensor result
+    unless and? [source\device = 'mps][(lrCount source\shape) = 1] -> panic "learn: mpsTrainingLoss expects a one-element MPS tensor"
+    return first lrTensorHostData source
 ]
 
 mpsTrainingModelState: function [artifact][
@@ -174,7 +179,7 @@ loadMpsTrainingModelState: function [artifact state][
         expectedShape: artifact\parameterStorage\[parameterName]\shape
         unless entry\shape = expectedShape -> panic ~"learn: MPS model state shape for |parameterName| does not match"
         restored: tensorFromBuffer entry\shape entry\buffer
-        set staged parameterName lrMetalUpload restored\shape restored\data
+        set staged parameterName lrMetalUpload restored\shape (lrTensorHostData restored)
     ]
     loop artifact\parameterNames 'parameterName [
         metalRelease artifact\parameterStorage\[parameterName]

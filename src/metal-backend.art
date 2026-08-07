@@ -167,7 +167,7 @@ compileMps: function [schedule][
 lrMetalFeedTensor: function [value temporaryList][
     source: lrAsTensor value
     if and? [source\device = 'mps][not? null? source\storage] -> return source\storage
-    uploaded: lrMetalUpload source\shape source\data
+    uploaded: lrMetalUpload source\shape (lrTensorHostData source)
     'temporaryList ++ @[uploaded]
     return uploaded
 ]
@@ -192,8 +192,7 @@ executeMps: function [artifact][
     ]
     results: metalRun.with: runtimeFeeds artifact\program
     output: results\0
-    data: metalDownload output
-    result: lrMakeTensorWithStorage output\shape data 'mps output
+    result: lrMakeTensorWithStorage output\shape null 'mps output
     loop temporaries 'temporary -> metalRelease temporary
     return result
 ]

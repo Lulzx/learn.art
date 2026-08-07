@@ -9,6 +9,8 @@ define :learnConfusionMeter [
 lrValidateClassificationPair: function [actual predicted][
     targets: lrAsTensor actual
     predictions: lrAsTensor predicted
+    lrTensorHostData targets
+    lrTensorHostData predictions
     unless targets\shape = predictions\shape -> panic "learn: classification metric values must have equal shape"
     if empty? targets\data -> panic "learn: classification metrics are undefined for empty values"
     return @[targets predictions]

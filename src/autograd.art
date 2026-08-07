@@ -56,9 +56,9 @@ variable: function [value][
 ]
 
 detach: function [value][
-    if is? :learnValue value -> return lrMakeTensorOn value\value\shape value\value\data value\value\device
+    if is? :learnValue value -> return lrMakeTensorOn value\value\shape (lrTensorHostData value\value) value\value\device
     source: lrAsTensor value
-    return lrMakeTensorOn source\shape source\data source\device
+    return lrMakeTensorOn source\shape (lrTensorHostData source) source\device
 ]
 
 gradient: function [value][
@@ -180,14 +180,17 @@ lrValueMatmul: function [left right][
 ]
 
 lrZerosLike: function [value][
+    lrTensorHostData value
     return lrMakeTensorOn value\shape (map value\data 'unused -> 0.0) value\device
 ]
 
 lrOnesLike: function [value][
+    lrTensorHostData value
     return lrMakeTensorOn value\shape (map value\data 'unused -> 1.0) value\device
 ]
 
 lrUnbroadcast: function [value targetShape][
+    lrTensorHostData value
     if value\shape = targetShape -> return lrMakeTensorOn value\shape value\data value\device
     data: lrFreshBlock
     targetCount: lrCount targetShape
@@ -203,6 +206,7 @@ lrUnbroadcast: function [value targetShape][
 ]
 
 lrExpandReductionGradient: function [up sourceShape axis scale][
+    lrTensorHostData up
     data: lrFreshBlock
     count: lrCount sourceShape
     if count > 0 [
@@ -224,6 +228,9 @@ lrExpandReductionGradient: function [up sourceShape axis scale][
 ]
 
 lrMatmulGradients: function [left right up][
+    lrTensorHostData left
+    lrTensorHostData right
+    lrTensorHostData up
     spec: lrMatmulSpec left\shape right\shape
     leftData: lrFreshBlock
     rightData: lrFreshBlock
@@ -254,6 +261,9 @@ lrMatmulGradients: function [left right up][
 ]
 
 lrConv2dGradients: function [source weights up stride padding][
+    lrTensorHostData source
+    lrTensorHostData weights
+    lrTensorHostData up
     sourceData: map source\data 'unused -> 0.0
     weightData: map weights\data 'unused -> 0.0
     batches: source\shape\0

@@ -147,6 +147,7 @@ predict: function [estimator features][
     set feed 'x x
     forward.with: feed estimator\model
     result: detach estimator\model\prediction
+    lrTensorHostData result
 
     if and? [estimator\kind = 'logistic][not? key? callAttrs 'probability] [
         classes: map result\data 'item -> (item >= 0.5)? -> 1.0 -> 0.0
@@ -194,6 +195,7 @@ score: function [estimator features targets][
 
 lrTensorRows: function [source start count][
     tensorValue: lrAsTensor source
+    lrTensorHostData tensorValue
     rank: size tensorValue\shape
     unless contains? [1 2] rank -> panic "learn: split supports vectors and matrices"
     width: (rank = 1)? -> 1 -> tensorValue\shape\1

@@ -26,6 +26,7 @@ lrPreprocessorWidth: function [featureShape][
 
 standardScaler: function [values][
     source: lrAsTensor values
+    lrTensorHostData source
     featureShape: lrPreprocessorFeatureShape source
     width: lrPreprocessorWidth featureShape
     rows: source\shape\0
@@ -81,6 +82,7 @@ lrValidatePreprocessorInput: function [scaler source][
 
 applyTransform: function [preprocessor values][
     source: lrAsTensor values
+    lrTensorHostData source
     if is? :learnTransformPipeline preprocessor [
         result: source
         loop preprocessor\steps 'item -> result: applyTransform item result
@@ -100,6 +102,7 @@ applyTransform: function [preprocessor values][
 
 inverseTransform: function [preprocessor values][
     source: lrAsTensor values
+    lrTensorHostData source
     if is? :learnTransformPipeline preprocessor [
         result: source
         loop reverse preprocessor\steps 'item -> result: inverseTransform item result

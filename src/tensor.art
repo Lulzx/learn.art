@@ -213,10 +213,43 @@ lrMakeTensorWithStorage: function [dims data device storage][
     ; owned blocks so equal tensors never share mutable storage.
     set result 'shape new dims
     set result 'strides lrStrides dims
-    set result 'data new data
+    ownedData: lrFreshBlock
+    unless null? data -> ownedData: new data
+    set result 'data ownedData
     set result 'device device
     set result 'storage storage
     return result
+]
+
+hostMaterialized?: function [value][
+    source: (is? :learnValue value)? -> value\value -> lrAsTensor value
+    return (size source\data) = (lrCount source\shape)
+]
+
+lrTensorHostData: function [value][
+    source: (is? :learnValue value)? -> value\value -> lrAsTensor value
+    unless hostMaterialized? source [
+        if null? source\storage -> panic "learn: tensor has no host data or device storage"
+        downloaded: lrBackendCall source\device 'download @[source\storage]
+        unless block? downloaded -> panic ~"learn: backend |source\device| returned malformed tensor data"
+        unless (size downloaded) = (lrCount source\shape) -> panic ~"learn: backend |source\device| returned the wrong tensor data count"
+        floats: lrFreshBlock
+        loop downloaded 'item -> 'floats ++ lrFloat item
+        source\data: floats
+    ]
+    return source\data
+]
+
+materializeTensor: function [value][
+    source: (is? :learnValue value)? -> value\value -> lrAsTensor value
+    lrTensorHostData source
+    return source
+]
+
+tensorData: function [value][
+    source: (is? :learnValue value)? -> value\value -> lrAsTensor value
+    hostData: lrTensorHostData source
+    return new hostData
 ]
 
 releaseTensor: function [value][
@@ -285,7 +318,7 @@ deviceOf: function [value][
 lrTensorTransfer: function [value requestedDevice][
     source: lrAsTensor value
     device: lrNormalizeDevice requestedDevice
-    return lrMakeTensorOn source\shape source\data device
+    return lrMakeTensorOn source\shape (lrTensorHostData source) device
 ]
 
 toDevice: function [value requestedDevice][
@@ -295,13 +328,14 @@ toDevice: function [value requestedDevice][
 
 tensorBuffer: function [value][
     source: (is? :learnValue value)? -> value\value -> lrAsTensor value
+    hostData: lrTensorHostData source
     return #[
         format: "learn.buffer"
         version: "0.9"
         device: source\device
         dtype: 'float64
-        count: size source\data
-        data: new source\data
+        count: size hostData
+        data: new hostData
     ]
 ]
 
@@ -393,6 +427,7 @@ lrFlatIndex: function [dims coordinates][
 tensorAt: function [value indices][
     if is? :learnValue value -> return lrValueAt value indices
     source: lrAsTensor value
+    lrTensorHostData source
     coordinates: indices
     if and? [integer? indices][(size source\shape) = 1] -> coordinates: @[indices]
     unless block? coordinates -> panic "learn: tensorAt expects an index block"
@@ -403,6 +438,8 @@ tensorAt: function [value indices][
 lrTensorBinary: function [left right operation][
     a: lrAsTensor left
     b: lrAsTensor right
+    lrTensorHostData a
+    lrTensorHostData b
     unless a\device = b\device -> panic ~"learn: tensor devices |a\device| and |b\device| do not match"
     dims: lrBroadcastShape a\shape b\shape
     data: lrFreshBlock
@@ -427,6 +464,7 @@ lrTensorBinary: function [left right operation][
 
 lrTensorUnary: function [value operation][
     source: lrAsTensor value
+    lrTensorHostData source
     data: lrFreshBlock
     loop source\data 'item [
         result: null
@@ -456,6 +494,7 @@ lrTensorUnary: function [value operation][
 ]
 
 lrSoftmaxSpec: function [source][
+    lrTensorHostData source
     rank: size source\shape
     classes: (rank = 0)? -> 1 -> last source\shape
     unless classes > 0 -> panic "learn: softmax requires a non-empty class axis"
@@ -508,6 +547,8 @@ lrCrossEntropySpec: function [logits targets][
 lrTensorCrossEntropy: function [logitsValue targetsValue][
     logits: lrAsTensor logitsValue
     targets: lrAsTensor targetsValue
+    lrTensorHostData logits
+    lrTensorHostData targets
     unless logits\device = targets\device -> panic "learn: crossEntropy operands must be on the same device"
     spec: lrCrossEntropySpec logits targets
     samples: spec\0
@@ -547,6 +588,8 @@ lrImageOutputSize: function [extent kernel stride padding][
 lrTensorConv2d: function [inputValue weightValue strideValue paddingValue][
     source: lrAsTensor inputValue
     weights: lrAsTensor weightValue
+    lrTensorHostData source
+    lrTensorHostData weights
     unless source\device = weights\device -> panic "learn: conv2d operands must be on the same device"
     unless (size source\shape) = 4 -> panic "learn: conv2d input must be NCHW rank 4"
     unless (size weights\shape) = 4 -> panic "learn: conv2d weights must be OIHW rank 4"
@@ -605,6 +648,7 @@ lrTensorConv2d: function [inputValue weightValue strideValue paddingValue][
 
 lrTensorPool2d: function [inputValue kernelValue strideValue paddingValue operation][
     source: lrAsTensor inputValue
+    lrTensorHostData source
     unless (size source\shape) = 4 -> panic "learn: pool2d input must be NCHW rank 4"
     kernel: lrImagePair kernelValue 1
     stride: (null? strideValue)? -> new kernel -> lrImagePair strideValue 1
@@ -688,6 +732,7 @@ avgPool2d: function [inputValue kernel][
 reshape: function [value dims][
     if is? :learnValue value -> return lrValueReshape value dims
     source: lrAsTensor value
+    lrTensorHostData source
     lrValidateShape dims
     unless (lrCount dims) = (size source\data) ->
         panic ~"learn: cannot reshape |source\shape| to |dims|"
@@ -723,6 +768,7 @@ transpose: function [value][
     if key? callAttrs 'axes -> requestedAxes: callAttrs\axes
     if is? :learnValue value -> return lrValueTranspose value requestedAxes
     source: lrAsTensor value
+    lrTensorHostData source
     rank: size source\shape
     axes: lrTransposeAxes source\shape requestedAxes
 
@@ -752,6 +798,7 @@ tensorSum: function [value][
     requestedAxis: attr 'axis
     if is? :learnValue value -> return lrValueReduce value 'sum requestedAxis
     source: lrAsTensor value
+    lrTensorHostData source
     unless null? requestedAxis -> return lrTensorReduceAxis source requestedAxis 'sum
     total: 0.0
     loop source\data 'item -> total: total + item
@@ -762,6 +809,7 @@ mean: function [value][
     requestedAxis: attr 'axis
     if is? :learnValue value -> return lrValueReduce value 'mean requestedAxis
     source: lrAsTensor value
+    lrTensorHostData source
     unless null? requestedAxis -> return lrTensorReduceAxis source requestedAxis 'mean
     if empty? source\data -> panic "learn: mean is undefined for an empty tensor"
     total: 0.0
@@ -833,6 +881,7 @@ tensorAbs: function [value][
 
 lrDropoutTensor: function [value context][
     source: lrAsTensor value
+    lrTensorHostData source
     unless context\training [
         context\mask: lrOnesLike source
         return lrMakeTensorOn source\shape source\data source\device
@@ -911,6 +960,7 @@ crossEntropy: function [logits targets][
 
 classPrediction: function [logitsValue][
     logits: (is? :learnValue logitsValue)? -> logitsValue\value -> lrAsTensor logitsValue
+    lrTensorHostData logits
     spec: lrSoftmaxSpec logits
     groups: spec\0
     classes: spec\1
@@ -932,15 +982,17 @@ classPrediction: function [logitsValue][
 multiclassAccuracy: function [actual predicted][
     targets: lrAsTensor actual
     classes: lrAsTensor predicted
+    targetData: lrTensorHostData targets
+    classData: lrTensorHostData classes
     unless targets\shape = classes\shape -> panic "learn: multiclass accuracy values must have equal shape"
-    if empty? targets\data -> panic "learn: multiclass accuracy is undefined for empty values"
+    if empty? targetData -> panic "learn: multiclass accuracy is undefined for empty values"
     correct: 0
-    loop 0..((size targets\data) - 1) 'itemIndex [
-        expected: lrClassIndex targets\data\[itemIndex] 2147483647
-        actualClass: lrClassIndex classes\data\[itemIndex] 2147483647
+    loop 0..((size targetData) - 1) 'itemIndex [
+        expected: lrClassIndex targetData\[itemIndex] 2147483647
+        actualClass: lrClassIndex classData\[itemIndex] 2147483647
         if expected = actualClass -> correct: correct + 1
     ]
-    return (to :floating correct) / size targets\data
+    return (to :floating correct) / size targetData
 ]
 
 binaryCrossEntropy: function [prediction target][
@@ -1023,6 +1075,8 @@ matmul: function [left right][
 
     a: lrAsTensor left
     b: lrAsTensor right
+    lrTensorHostData a
+    lrTensorHostData b
     unless a\device = b\device -> panic ~"learn: tensor devices |a\device| and |b\device| do not match"
     spec: lrMatmulSpec a\shape b\shape
     data: lrFreshBlock
@@ -1045,6 +1099,7 @@ matmul: function [left right][
 ]
 
 lrTensorString: function [value][
+    lrTensorHostData value
     dims: value\shape
     if empty? dims -> return to :string value\data\0
     if (size dims) = 1 -> return to :string value\data

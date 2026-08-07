@@ -52,6 +52,26 @@ suite "Metal backend" [
         releaseMps artifact
     ]
 
+    test "feeds backend-native strided views after releasing their source" [
+        model: graph [
+            x: lrInputFrom tensor.zeros [3]
+            doubled: x * 2.0
+        ]
+        data: graphData model
+        schedule: scheduleGraph data 'doubled
+        artifact: compileMps schedule
+        source: tensor.device: 'mps [1 2 3 4 5 6]
+        view: tensorSlice.start: 1.count: 3.step: 2 source
+        releaseTensor source
+        assert -> not? hostMaterialized? view
+        result: executeMps.with: #[x: view] artifact
+        assert -> not? hostMaterialized? view
+        assert -> [4.0 8.0 12.0] = tensorData result
+        releaseTensor result
+        releaseTensor view
+        releaseMps artifact
+    ]
+
     test "matches CPU cross entropy" [
         logitsNode: lrInputFrom tensor.zeros [2 3]
         labelsNode: lrInputFrom tensor.zeros [2]

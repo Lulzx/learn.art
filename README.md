@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.29 adds explicit floating-point dtype identity and lazy read-only slice views without ambiguous device-storage ownership.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.30 executes lazy strided views in capable device backends and keeps shared device storage alive with explicit reference counts.
 
 ## Example
 
@@ -45,7 +45,7 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 
 Tensors contain floating-point `data`, inferred `shape`, row-major `strides`, and an explicit `float32` or `float64` dtype. `tensor.dtype:` selects identity, `dtypeOf` inspects it, and `toDtype` creates an owned conversion. Mixed binary operations promote to `float64` when either operand is `float64`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices.
 
-`tensorSlice.axis:.start:.count:.step:` creates a lazy, read-only strided view. Views retain their source's device and dtype; materialization caches an owned projection, while eager arithmetic returns an ordinary owned tensor. The source owns any backend storage and must remain alive until an unmaterialized view is consumed.
+`tensorSlice.axis:.start:.count:.step:` creates a lazy, read-only strided view. Views retain their source's device and dtype; materialization caches an owned projection, while eager arithmetic returns an ordinary owned tensor. Device views retain the root allocation, so the source may be released first. Backends may implement native slicing; MPS uses slice or gather and can feed the projection directly into a compiled program without filling its host cache.
 
 `matmul` follows the usual generalized rules: two vectors produce a scalar dot product, matrix–vector and vector–matrix products remove the promoted unit dimension, and rank-2-or-higher operands broadcast their leading batch dimensions. The same shapes and batch accumulation rules apply to reverse-mode gradients and scheduled CPU execution.
 
@@ -185,4 +185,4 @@ arturo examples/compiled-mps-training.art
 arturo examples/mnist-mps.art
 ```
 
-The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Mutable aliases and backend-native strided views remain outside the current milestone.
+The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Mutable view assignment and overlap-safe copy-on-write behavior remain outside the current milestone.

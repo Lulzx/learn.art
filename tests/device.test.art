@@ -13,6 +13,27 @@ lrLazyTestRelease: function [storage][
     return null
 ]
 
+lrLazyTestViewState: #[downloads: 0 slices: 0 releases: 0]
+lrLazyTestViewDownload: function [storage][
+    lrLazyTestViewState\downloads: lrLazyTestViewState\downloads + 1
+    return new storage\data
+]
+lrLazyTestViewSlice: function [storage axis start count step][
+    unless axis = 0 -> panic "test backend only supports one-dimensional slices"
+    lrLazyTestViewState\slices: lrLazyTestViewState\slices + 1
+    data: lrFreshBlock
+    if count > 0 [loop 0..(count - 1) 'position [
+        sourceIndex: start + (position * step)
+        'data ++ storage\data\[sourceIndex]
+    ]]
+    return #[data: data released: false]
+]
+lrLazyTestViewRelease: function [storage][
+    lrLazyTestViewState\releases: lrLazyTestViewState\releases + 1
+    storage\released: true
+    return null
+]
+
 suite "device-aware storage" [
     test "places tensors explicitly on CPU" [
         value: tensor.device: 'cpu [[1 2] [3 4]]
@@ -70,6 +91,32 @@ suite "device-aware storage" [
         assert -> [3.0 4.0] = buffer\data
         releaseTensor value
         assert -> storage\released
+    ]
+
+    test "retains shared storage and executes strided views in the backend" [
+        lrLazyTestViewState\downloads: 0
+        lrLazyTestViewState\slices: 0
+        lrLazyTestViewState\releases: 0
+        registerBackend 'lazyViewTest #[
+            available: 'lrLazyTestAvailable
+            download: 'lrLazyTestViewDownload
+            slice: 'lrLazyTestViewSlice
+            release: 'lrLazyTestViewRelease
+        ]
+        storage: #[data: [1.0 2.0 3.0 4.0 5.0 6.0] released: false]
+        source: lrMakeTensorWithStorage [6] null 'lazyViewTest storage
+        view: tensorSlice.start: 1.count: 3.step: 2 source
+        assert -> 2 = source\storageOwner\references
+        releaseTensor source
+        assert -> not? storage\released
+        assert -> 1 = view\storageOwner\references
+        assert -> [2.0 4.0 6.0] = tensorData view
+        assert -> 1 = lrLazyTestViewState\slices
+        assert -> 1 = lrLazyTestViewState\downloads
+        assert -> not? storage\released
+        releaseTensor view
+        assert -> storage\released
+        assert -> 2 = lrLazyTestViewState\releases
     ]
 
     test "rejects unavailable devices and malformed buffers" [

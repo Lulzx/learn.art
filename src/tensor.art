@@ -42,6 +42,43 @@ define :learnTensorView [
     string: method [][lrTensorViewString this]
 ]
 
+lrMakeStorageOwner: function [device handle][
+    if null? handle -> return null
+    owner: #[device: device handle: null references: 1 released: false]
+    ; Preserve backend handle identity: Arturo dictionary literals copy nested
+    ; dictionaries, while a storage handle may itself be a mutable record.
+    set owner 'handle handle
+    return owner
+]
+
+lrRetainStorageOwner: function [owner][
+    if null? owner -> return null
+    if owner\released -> panic "learn: cannot retain released tensor storage"
+    owner\references: owner\references + 1
+    return owner
+]
+
+lrReleaseStorageOwner: function [owner][
+    if null? owner -> return null
+    if owner\released -> return null
+    owner\references: owner\references - 1
+    if owner\references < 0 -> panic "learn: tensor storage reference count underflow"
+    if owner\references = 0 [
+        lrBackendCall owner\device 'release @[owner\handle]
+        owner\handle: null
+        owner\released: true
+    ]
+    return null
+]
+
+lrTensorStorageOwner: function [value][
+    if key? value 'storageOwner -> return value\storageOwner
+    if null? value\storage -> return null
+    owner: lrMakeStorageOwner value\device value\storage
+    set value 'storageOwner owner
+    return owner
+]
+
 define :learnInitializer [
     init: constructor [kind seed low high]
 ]
@@ -267,6 +304,15 @@ lrMakeTensorTypedWithStorage: function [dims data device dtype storage][
     set result 'device device
     set result 'dtype normalizedDtype
     set result 'storage storage
+    set result 'storageOwner lrMakeStorageOwner device storage
+    return result
+]
+
+lrMakeTensorTypedWithStorageOwner: function [dims data device dtype owner][
+    result: lrMakeTensorTypedWithStorage dims data device dtype null
+    retained: lrRetainStorageOwner owner
+    set result 'storageOwner retained
+    unless null? retained -> result\storage: retained\handle
     return result
 ]
 
@@ -274,20 +320,64 @@ lrMakeTensorLike: function [dims data source][
     return lrMakeTensorTypedOn dims data source\device source\dtype
 ]
 
+lrSliceHostRecord: function [record operation][
+    dims: new record\shape
+    set dims operation\axis operation\count
+    output: lrFreshBlock
+    count: lrCount dims
+    if count > 0 [loop 0..(count - 1) 'outputIndex [
+        coordinates: lrCoordinates dims outputIndex
+        sourceCoordinates: new coordinates
+        set sourceCoordinates operation\axis (operation\start + (coordinates\[operation\axis] * operation\step))
+        sourceIndex: lrFlatIndex record\shape sourceCoordinates
+        'output ++ record\data\[sourceIndex]
+    ]]
+    return #[shape: dims data: output]
+]
+
+lrTensorViewNativeStorage: function [view][
+    if key? view 'nativeStorageOwner [
+        unless null? view\nativeStorageOwner -> return view\nativeStorageOwner
+    ]
+    if (lrCount view\shape) = 0 -> return null
+    owner: view\storageOwner
+    if null? owner -> return null
+    descriptor: lrBackend view\device
+    unless key? descriptor 'slice -> return null
+    working: owner\handle
+    ownsWorking: false
+    loop view\operations 'operation [
+        next: lrBackendCall view\device 'slice @[working operation\axis operation\start operation\count operation\step]
+        if ownsWorking -> lrBackendCall view\device 'release @[working]
+        working: next
+        ownsWorking: true
+    ]
+    nativeOwner: lrMakeStorageOwner view\device working
+    set view 'nativeStorageOwner nativeOwner
+    return nativeOwner
+]
+
 lrTensorViewHostData: function [view][
     if (size view\data) = (lrCount view\shape) -> return view\data
-    sourceData: lrTensorHostData view\source
-    sourceShape: view\source\shape
-    output: lrFreshBlock
-    count: lrCount view\shape
-    if count > 0 [loop 0..(count - 1) 'outputIndex [
-        coordinates: lrCoordinates view\shape outputIndex
-        sourceCoordinates: new coordinates
-        set sourceCoordinates view\axis (view\start + (coordinates\[view\axis] * view\step))
-        sourceIndex: lrFlatIndex sourceShape sourceCoordinates
-        'output ++ sourceData\[sourceIndex]
-    ]]
-    view\data: output
+    if (lrCount view\shape) = 0 [
+        view\data: lrFreshBlock
+        return view\data
+    ]
+    nativeOwner: lrTensorViewNativeStorage view
+    unless null? nativeOwner [
+        downloaded: lrBackendCall view\device 'download @[nativeOwner\handle]
+        unless and? [block? downloaded][(size downloaded) = (lrCount view\shape)] -> panic "learn: backend returned malformed slice data"
+        output: lrFreshBlock
+        loop downloaded 'item -> 'output ++ lrFloat item
+        view\data: output
+        return view\data
+    ]
+    rootData: null
+    unless null? view\storageOwner -> rootData: lrBackendCall view\device 'download @[view\storageOwner\handle]
+    if null? rootData -> rootData: lrTensorHostData view\root
+    record: #[shape: new view\root\shape data: rootData]
+    loop view\operations 'operation -> record: lrSliceHostRecord record operation
+    view\data: record\data
     return view\data
 ]
 
@@ -334,13 +424,21 @@ tensorData: function [value][
 releaseTensor: function [value][
     if is? :learnTensorView value [
         value\data: lrFreshBlock
+        if key? value 'nativeStorageOwner [
+            lrReleaseStorageOwner value\nativeStorageOwner
+            value\nativeStorageOwner: null
+        ]
+        if key? value 'storageOwner [
+            lrReleaseStorageOwner value\storageOwner
+            value\storageOwner: null
+        ]
         return null
     ]
     source: (is? :learnValue value)? -> value\value -> lrAsTensor value
-    unless null? source\storage [
-        lrBackendCall source\device 'release @[source\storage]
-        source\storage: null
-    ]
+    owner: lrTensorStorageOwner source
+    lrReleaseStorageOwner owner
+    set source 'storageOwner null
+    source\storage: null
     return null
 ]
 
@@ -514,6 +612,20 @@ tensorSlice: function [value][
     result: to :learnTensorView args
     set result 'shape new dims
     set result 'data lrFreshBlock
+    root: source
+    operations: lrFreshBlock
+    owner: null
+    if is? :learnTensorView source [
+        root: source\root
+        operations: new source\operations
+        owner: source\storageOwner
+    ]
+    if is? :learnTensor source -> owner: lrTensorStorageOwner source
+    'operations ++ #[axis: axis start: start count: sliceCount step: step]
+    set result 'root root
+    set result 'operations operations
+    set result 'storageOwner lrRetainStorageOwner owner
+    set result 'nativeStorageOwner null
     return result
 ]
 

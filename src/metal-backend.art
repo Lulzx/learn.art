@@ -30,6 +30,13 @@ lrMetalDownload: function [storage][
     return metalDownload storage
 ]
 
+lrMetalSliceStorage: function [storage axis start count step][
+    if step = 1 -> return metalSlice storage axis start count
+    indices: lrFreshBlock
+    if count > 0 [loop 0..(count - 1) 'position -> 'indices ++ (start + (position * step))]
+    return metalGather.axis: axis storage indices
+]
+
 lrMetalReleaseStorage: function [storage][
     metalRelease storage
     return null
@@ -48,6 +55,7 @@ enableMetalBackend: function [][
         dtypes: ['float32]
         upload: 'lrMetalUpload
         download: 'lrMetalDownload
+        slice: 'lrMetalSliceStorage
         release: 'lrMetalReleaseStorage
         synchronize: 'lrMetalSynchronize
         compile: 'compileMps
@@ -167,6 +175,10 @@ compileMps: function [schedule][
 ]
 
 lrMetalFeedTensor: function [value temporaryList][
+    if is? :learnTensorView value [
+        owner: lrTensorViewNativeStorage value
+        unless null? owner -> return owner\handle
+    ]
     source: lrAsTensor value
     if and? [source\device = 'mps][not? null? source\storage] -> return source\storage
     uploaded: lrMetalUpload source\shape (lrTensorHostData source)

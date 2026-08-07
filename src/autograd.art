@@ -253,6 +253,121 @@ lrMatmulGradients: function [left right up][
     return @[leftGradient rightGradient]
 ]
 
+lrConv2dGradients: function [source weights up stride padding][
+    sourceData: map source\data 'unused -> 0.0
+    weightData: map weights\data 'unused -> 0.0
+    batches: source\shape\0
+    channels: source\shape\1
+    inputHeight: source\shape\2
+    inputWidth: source\shape\3
+    outputs: weights\shape\0
+    kernelHeight: weights\shape\2
+    kernelWidth: weights\shape\3
+    outputHeight: up\shape\2
+    outputWidth: up\shape\3
+    loop 0..(batches - 1) 'batch [
+        loop 0..(outputs - 1) 'outputChannel [
+            loop 0..(outputHeight - 1) 'outputY [
+                loop 0..(outputWidth - 1) 'outputX [
+                    outputPlane: batch * outputs
+                    outputPlane: outputPlane + outputChannel
+                    outputRow: outputPlane * outputHeight
+                    outputRow: outputRow + outputY
+                    outputIndex: outputRow * outputWidth
+                    outputIndex: outputIndex + outputX
+                    upstream: up\data\[outputIndex]
+                    loop 0..(channels - 1) 'channel [
+                        loop 0..(kernelHeight - 1) 'kernelY [
+                            loop 0..(kernelWidth - 1) 'kernelX [
+                                inputY: outputY * stride\0
+                                inputY: inputY + kernelY
+                                inputY: inputY - padding\0
+                                inputX: outputX * stride\1
+                                inputX: inputX + kernelX
+                                inputX: inputX - padding\1
+                                if and? [and? [inputY >= 0][inputY < inputHeight]][and? [inputX >= 0][inputX < inputWidth]] [
+                                    inputPlane: batch * channels
+                                    inputPlane: inputPlane + channel
+                                    inputRow: inputPlane * inputHeight
+                                    inputRow: inputRow + inputY
+                                    inputIndex: inputRow * inputWidth
+                                    inputIndex: inputIndex + inputX
+                                    weightPlane: outputChannel * channels
+                                    weightPlane: weightPlane + channel
+                                    weightRow: weightPlane * kernelHeight
+                                    weightRow: weightRow + kernelY
+                                    weightIndex: weightRow * kernelWidth
+                                    weightIndex: weightIndex + kernelX
+                                    sourceContribution: upstream * weights\data\[weightIndex]
+                                    weightContribution: upstream * source\data\[inputIndex]
+                                    set sourceData inputIndex (sourceData\[inputIndex] + sourceContribution)
+                                    set weightData weightIndex (weightData\[weightIndex] + weightContribution)
+                                ]
+                            ]
+                        ]
+                    ]
+                ]
+            ]
+        ]
+    ]
+    sourceGradient: lrMakeTensorOn source\shape sourceData source\device
+    weightGradient: lrMakeTensorOn weights\shape weightData weights\device
+    return @[sourceGradient weightGradient]
+]
+
+lrPool2dGradient: function [source up kernel stride padding operation][
+    data: map source\data 'unused -> 0.0
+    batches: source\shape\0
+    channels: source\shape\1
+    inputHeight: source\shape\2
+    inputWidth: source\shape\3
+    outputHeight: up\shape\2
+    outputWidth: up\shape\3
+    loop 0..(batches - 1) 'batch [
+        loop 0..(channels - 1) 'channel [
+            loop 0..(outputHeight - 1) 'outputY [
+                loop 0..(outputWidth - 1) 'outputX [
+                    outputPlane: batch * channels
+                    outputPlane: outputPlane + channel
+                    outputRow: outputPlane * outputHeight
+                    outputRow: outputRow + outputY
+                    outputIndex: outputRow * outputWidth
+                    outputIndex: outputIndex + outputX
+                    validIndices: lrFreshBlock
+                    maximumIndex: null
+                    loop 0..(kernel\0 - 1) 'kernelY [
+                        loop 0..(kernel\1 - 1) 'kernelX [
+                            inputY: outputY * stride\0
+                            inputY: inputY + kernelY
+                            inputY: inputY - padding\0
+                            inputX: outputX * stride\1
+                            inputX: inputX + kernelX
+                            inputX: inputX - padding\1
+                            if and? [and? [inputY >= 0][inputY < inputHeight]][and? [inputX >= 0][inputX < inputWidth]] [
+                                inputPlane: batch * channels
+                                inputPlane: inputPlane + channel
+                                inputRow: inputPlane * inputHeight
+                                inputRow: inputRow + inputY
+                                inputIndex: inputRow * inputWidth
+                                inputIndex: inputIndex + inputX
+                                'validIndices ++ inputIndex
+                                if null? maximumIndex -> maximumIndex: inputIndex
+                                if source\data\[inputIndex] > source\data\[maximumIndex] -> maximumIndex: inputIndex
+                            ]
+                        ]
+                    ]
+                    if operation = 'max -> set data maximumIndex (data\[maximumIndex] + up\data\[outputIndex])
+                    if operation = 'average [
+                        contribution: up\data\[outputIndex] / size validIndices
+                        loop validIndices 'inputIndex -> set data inputIndex (data\[inputIndex] + contribution)
+                    ]
+                ]
+            ]
+        ]
+    ]
+    return lrMakeTensorOn source\shape data source\device
+]
+
 lrParameterTrainable?: function [item][
     if and? [dictionary? item\context][key? item\context 'trainable] -> return item\context\trainable
     return item\requiresGradient
@@ -374,8 +489,6 @@ backward: function [output][
         up: node\gradient
         op: node\operation
 
-        if contains? ['conv2d 'maxPool2d 'avgPool2d] op -> panic ~"learn: backward for |op| is not available; use compiled MPS training primitives"
-
         if op = 'add [
             lrAccumulate node\parents\0 up
             lrAccumulate node\parents\1 up
@@ -485,6 +598,19 @@ backward: function [output][
             lrAccumulate node\parents\0 gradients\0
             lrAccumulate node\parents\1 gradients\1
             lrAccumulate node\parents\2 up
+        ]
+        if op = 'conv2d [
+            gradients: lrConv2dGradients node\parents\0\value node\parents\1\value up node\context\stride node\context\padding
+            lrAccumulate node\parents\0 gradients\0
+            lrAccumulate node\parents\1 gradients\1
+        ]
+        if op = 'maxPool2d [
+            contribution: lrPool2dGradient node\parents\0\value up node\context\kernel node\context\stride node\context\padding 'max
+            lrAccumulate node\parents\0 contribution
+        ]
+        if op = 'avgPool2d [
+            contribution: lrPool2dGradient node\parents\0\value up node\context\kernel node\context\stride node\context\padding 'average
+            lrAccumulate node\parents\0 contribution
         ]
         if op = 'pow [
             exponent: node\parents\1\value

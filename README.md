@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.26 turns reverse differentiation and optimizer updates into inspectable graph transformations, then compiles the resulting training graph through [`arturo-metal`](https://github.com/Lulzx/arturo-metal).
+`learn` is differentiable programming as ordinary Arturo data. Version 0.27 adds eager NCHW convolution and pooling derivatives and trains convolution graphs through the generic [`arturo-metal`](https://github.com/Lulzx/arturo-metal) compiler.
 
 ## Example
 
@@ -46,6 +46,8 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 Tensors contain owned floating-point `data`, inferred `shape`, and row-major `strides`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices.
 
 `matmul` follows the usual generalized rules: two vectors produce a scalar dot product, matrix–vector and vector–matrix products remove the promoted unit dimension, and rank-2-or-higher operands broadcast their leading batch dimensions. The same shapes and batch accumulation rules apply to reverse-mode gradients and scheduled CPU execution.
+
+`conv2d`, `maxPool2d`, and `avgPool2d` participate in reverse-mode differentiation, including overlapping windows, stride, and padding. Convolution produces gradients for both NCHW inputs and OIHW weights; max pooling routes each window to its first maximum, while average pooling divides across valid, unpadded elements.
 
 Every tensor carries an explicit device. CPU support is always registered; importing `src/metal-backend.art` adds `mps` on supported Apple silicon. `registerBackend`, `backendAvailable?`, and `availableDevices` expose the registry, while `releaseTensor` explicitly frees non-CPU storage. Device metadata survives graph export, optimization, and scheduled execution.
 

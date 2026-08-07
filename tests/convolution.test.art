@@ -32,12 +32,43 @@ suite "convolution and pooling" [
         assert -> 'maxPool2d = data\nodes\pooled\operation
     ]
 
-    test "rejects unsupported convolution backward explicitly" [
+    test "differentiates convolution inputs and weights" [
         image: variable tensor [[[[1 2] [3 4]]]]
-        weights: tensor [[[[1]]]]
+        weights: variable tensor [[[[2]]]]
         convolution: conv2d image weights
         loss: tensorSum convolution
-        rejected?: throws? [backward loss]
-        assert -> rejected?
+        backward loss
+        assert -> [2.0 2.0 2.0 2.0] = image\gradient\data
+        assert -> [10.0] = weights\gradient\data
+    ]
+
+    test "differentiates overlapping max and average pooling" [
+        image: variable tensor [[[[1 5 2] [4 3 6] [0 7 2]]]]
+        maximum: maxPool2d.stride: [1 1] image [2 2]
+        maximumLoss: tensorSum maximum
+        backward maximumLoss
+        assert -> [0.0 1.0 0.0 0.0 0.0 1.0 0.0 2.0 0.0] = image\gradient\data
+
+        averageImage: variable tensor [[[[1 2 3] [4 5 6] [7 8 9]]]]
+        average: avgPool2d.stride: [1 1] averageImage [2 2]
+        averageLoss: tensorSum average
+        backward averageLoss
+        assert -> [0.25 0.5 0.25 0.5 1.0 0.5 0.25 0.5 0.25] = averageImage\gradient\data
+    ]
+
+    test "differentiates strided padded image operations" [
+        image: variable tensor [[[[1 2 3] [4 5 6] [7 8 9]]]]
+        weights: variable tensor [[[[1 2] [3 4]]]]
+        convolution: conv2d.stride: [2 2].padding: [1 1] image weights
+        loss: tensorSum convolution
+        backward loss
+        assert -> [4.0 3.0 4.0 2.0 1.0 2.0 4.0 3.0 4.0] = image\gradient\data
+        assert -> [5.0 10.0 10.0 20.0] = weights\gradient\data
+
+        pooledImage: variable tensor [[[[1 2] [3 4]]]]
+        pooled: avgPool2d.stride: [1 1].padding: [1 1] pooledImage [2 2]
+        pooledLoss: tensorSum pooled
+        backward pooledLoss
+        assert -> [2.25 2.25 2.25 2.25] = pooledImage\gradient\data
     ]
 ]

@@ -26,7 +26,8 @@
 - v0.24: pluggable device backends and reusable compiled MPSGraph inference through `arturo-metal`.
 - v0.25: GPU-resident MLP training, direct IDX-backed MNIST execution, and NCHW convolution/pooling schedules.
 - v0.26: ordinary-data differentiation and optimizer graph transforms compiled as generic MPSGraph training programs.
+- v0.27: eager convolution/pooling reverse kernels and generic compiled convolution training on MPSGraph.
 
 ## Next
 
-The next coherent milestone is reverse-mode convolution and pooling derivatives across eager and compiled training.
+The next coherent milestone is lazy host materialization for GPU tensors and training results.

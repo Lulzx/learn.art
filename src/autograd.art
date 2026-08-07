@@ -142,14 +142,14 @@ lrValueReduce: function [value operation requestedAxis][
 
 lrValueReshape: function [value dims][
     source: lrAsValue value
-    result: reshape source\value dims
+    result: lrAsTensor (reshape source\value dims)
     return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'reshape parents: @[source] parameter: false]
 ]
 
 lrValueTranspose: function [value requestedAxes][
     source: lrAsValue value
     axes: lrTransposeAxes source\value\shape requestedAxes
-    result: transpose.axes: axes source\value
+    result: lrAsTensor (transpose.axes: axes source\value)
     return lrMakeValue #[value: result requiresGradient: source\requiresGradient operation: 'transpose parents: @[source] parameter: false context: #[axes: axes]]
 ]
 
@@ -455,8 +455,8 @@ lrForwardNode: function [node][
     if op = 'mean -> node\value: mean node\parents\0\value
     if op = 'sumAxis -> node\value: tensorSum.axis: node\context\axis node\parents\0\value
     if op = 'meanAxis -> node\value: mean.axis: node\context\axis node\parents\0\value
-    if op = 'reshape -> node\value: reshape node\parents\0\value node\value\shape
-    if op = 'transpose -> node\value: transpose.axes: node\context\axes node\parents\0\value
+    if op = 'reshape -> node\value: lrAsTensor (reshape node\parents\0\value node\value\shape)
+    if op = 'transpose -> node\value: lrAsTensor (transpose.axes: node\context\axes node\parents\0\value)
     if op = 'index -> node\value: tensorAt node\parents\0\value node\context\indices
     if op = 'transfer -> node\value: lrTensorTransfer node\parents\0\value node\context\device
     if op = 'matmul -> node\value: matmul node\parents\0\value node\parents\1\value

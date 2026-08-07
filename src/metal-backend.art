@@ -37,6 +37,18 @@ lrMetalSliceStorage: function [storage axis start count step][
     return metalGather.axis: axis storage indices
 ]
 
+lrMetalReshapeStorage: function [storage dims][
+    return metalReshape storage dims
+]
+
+lrMetalTransposeStorage: function [storage axes][
+    return metalTranspose storage axes
+]
+
+lrMetalScatterStorage: function [storage indices values][
+    return metalScatter storage indices values
+]
+
 lrMetalReleaseStorage: function [storage][
     metalRelease storage
     return null
@@ -56,6 +68,9 @@ enableMetalBackend: function [][
         upload: 'lrMetalUpload
         download: 'lrMetalDownload
         slice: 'lrMetalSliceStorage
+        reshape: 'lrMetalReshapeStorage
+        transpose: 'lrMetalTransposeStorage
+        scatter: 'lrMetalScatterStorage
         release: 'lrMetalReleaseStorage
         synchronize: 'lrMetalSynchronize
         compile: 'compileMps

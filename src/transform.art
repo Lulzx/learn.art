@@ -140,11 +140,11 @@ lrExecuteDataNode: function [node parentValues][
         source: parentValues\0
         return mean.axis: axis source
     ]
-    if operation = 'reshape -> return reshape parentValues\0 node\shape
+    if operation = 'reshape -> return lrAsTensor (reshape parentValues\0 node\shape)
     if operation = 'transpose [
         axes: node\context\axes
         source: parentValues\0
-        return transpose.axes: axes source
+        return lrAsTensor (transpose.axes: axes source)
     ]
     if operation = 'index [
         source: parentValues\0

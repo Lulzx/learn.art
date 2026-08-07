@@ -11,7 +11,7 @@ lrVectorData: function [value label][
     rank: size source\shape
     if rank = 1 -> return source
     if and? [rank = 2][source\shape\1 = 1] ->
-        return reshape source @[source\shape\0]
+        return lrAsTensor (reshape source @[source\shape\0])
     panic ~"learn: |label| must be a vector or a one-column matrix"
 ]
 
@@ -19,7 +19,7 @@ lrMatrixData: function [value label][
     source: lrAsTensor value
     rank: size source\shape
     if rank = 2 -> return source
-    if rank = 1 -> return reshape source @[source\shape\0 1]
+    if rank = 1 -> return lrAsTensor (reshape source @[source\shape\0 1])
     panic ~"learn: |label| must be a vector or matrix"
 ]
 

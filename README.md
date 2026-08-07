@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.31 adds overlap-safe mutable view assignment with versioned caches and atomic device-storage replacement.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.32 adds backend-native scatter assignment for mutable views and zero-copy reshape/transpose views.
 
 ## Example
 
@@ -45,9 +45,9 @@ The result converges to `w ≈ 2` and `b ≈ 1`. Named intermediate expressions 
 
 Tensors contain floating-point `data`, inferred `shape`, row-major `strides`, and an explicit `float32` or `float64` dtype. `tensor.dtype:` selects identity, `dtypeOf` inspects it, and `toDtype` creates an owned conversion. Mixed binary operations promote to `float64` when either operand is `float64`. Rectangular nested blocks may have any rank, and broadcasting aligns trailing dimensions. `tensorSum.axis:` and `mean.axis:` reduce one explicit axis (negative axes count from the end); without `axis:` they reduce the whole tensor. `transpose.axes:` accepts a full axis permutation, while plain `transpose` swaps the last two axes. `tensorAt value [i j ...]` returns an owned scalar copy and supports negative indices.
 
-`tensorSlice.axis:.start:.count:.step:` creates a lazy strided view. Views retain their source's device and dtype; materialization caches an owned projection, while eager arithmetic returns an ordinary owned tensor. Device views retain the root allocation, so the source may be released first. Backends may implement native slicing; MPS uses slice or gather and can feed the projection directly into a compiled program without filling its host cache.
+`tensorSlice.axis:.start:.count:.step:`, `reshape`, and `transpose` create lazy views. Views retain their source's device and dtype; `hostMaterialized?` stays false and `tensorData` (or any tensor operator) materializes an owned, versioned projection on demand, while eager arithmetic returns an ordinary owned tensor. Shape views compose as tagged projections: a reshape preserves flat order and a transpose permutes it. Device views retain the root allocation, so the source may be released first. Backends may implement native slicing, reshaping, and transposing; MPS uses slice/gather, buffer-sharing reshape, and transpose, and can feed a projected view directly into a compiled program without filling its host cache.
 
-`assignTensor target replacement` mutates an owned tensor or the root selected by a view. Scalars fill the target; tensor replacements require matching shape and dtype. Replacement values are snapshotted before mutation, making overlapping slice assignments deterministic. Alias caches are versioned and invalidated lazily. Device writes upload a complete replacement and atomically swap the shared handle before releasing the old allocation.
+`assignTensor target replacement` mutates an owned tensor or the root selected by a view. Scalars fill the target; tensor replacements require matching shape and dtype. Replacement values are snapshotted before mutation, making overlapping slice assignments deterministic. Alias caches are versioned and invalidated lazily. Device writes atomically swap the shared handle before releasing the old allocation; backends with a `scatter` capability (MPS) realize the replacement entirely on the device, and portable backends fall back to a host copy-and-upload.
 
 `matmul` follows the usual generalized rules: two vectors produce a scalar dot product, matrix–vector and vector–matrix products remove the promoted unit dimension, and rank-2-or-higher operands broadcast their leading batch dimensions. The same shapes and batch accumulation rules apply to reverse-mode gradients and scheduled CPU execution.
 
@@ -137,7 +137,7 @@ Dense layers use Xavier initialization with seed `0` by default; pass `denseLaye
 
 `compileNativeCpu schedule` lowers eligible fusion groups to generated C when `clang` is available. `executeNativeCpu.with: feeds artifact` uses those kernels and automatically falls back to the reference backend for unsupported groups or dynamic shapes.
 
-On macOS, build the vendored backend once with `cd vendor/metal && arturo scripts/build.art`. Import `src/metal-backend.art`, then use `compileMps schedule` and `executeMps.with: feeds artifact` for reusable compiled MPSGraph execution. Set `LEARN_METAL_LIBRARY` to override the dylib path. Dense math, broadcasting, reductions, activations, softmax, dropout, and cross entropy are lowered without CPU operator dispatch; `releaseMps` frees the compiled artifact.
+On macOS, build the vendored backend once with `cd vendor/metal && arturo scripts/build.art`. Import `src/metal-backend.art`, then use `compileMps schedule` and `executeMps.with: feeds artifact` for reusable compiled MPSGraph execution. Set `LEARN_METAL_LIBRARY` to override the dylib path. Dense math, broadcasting, reductions, activations, softmax, dropout, cross entropy, reshape, transpose, and view slice/gather/scatter are lowered without CPU operator dispatch; `releaseMps` frees the compiled artifact.
 
 ## GPU-resident training and MNIST
 

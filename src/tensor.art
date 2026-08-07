@@ -333,7 +333,30 @@ lrMakeTensorLike: function [dims data source][
     return lrMakeTensorTypedOn dims data source\device source\dtype
 ]
 
-lrSliceHostRecord: function [record operation][
+lrTransposeHostRecord: function [record axes][
+    rank: size record\shape
+    outputShape: lrFreshBlock
+    loop axes 'axis -> 'outputShape ++ record\shape\[axis]
+    output: lrFreshBlock
+    count: lrCount outputShape
+    if count > 0 [loop 0..(count - 1) 'outputIndex [
+        outputCoordinates: lrCoordinates outputShape outputIndex
+        sourceCoordinates: lrArgs rank
+        if rank > 0 [
+            loop 0..(rank - 1) 'outputAxis [
+                sourceAxis: axes\[outputAxis]
+                set sourceCoordinates sourceAxis outputCoordinates\[outputAxis]
+            ]
+        ]
+        sourceIndex: lrFlatIndex record\shape sourceCoordinates
+        'output ++ record\data\[sourceIndex]
+    ]]
+    return #[shape: outputShape data: output]
+]
+
+lrApplyViewOperation: function [record operation][
+    if operation\kind = 'reshape -> return #[shape: new operation\dims data: new record\data]
+    if operation\kind = 'transpose -> return lrTransposeHostRecord record operation\axes
     dims: new record\shape
     set dims operation\axis operation\count
     output: lrFreshBlock
@@ -359,12 +382,24 @@ lrTensorViewNativeStorage: function [view][
     if (lrCount view\shape) = 0 -> return null
     owner: view\storageOwner
     if null? owner -> return null
-    descriptor: lrBackend view\device
-    unless key? descriptor 'slice -> return null
     working: owner\handle
     ownsWorking: false
+    descriptor: lrBackend view\device
     loop view\operations 'operation [
-        next: lrBackendCall view\device 'slice @[working operation\axis operation\start operation\count operation\step]
+        next: null
+        if operation\kind = 'reshape [
+            if key? descriptor 'reshape -> next: lrBackendCall view\device 'reshape @[working operation\dims]
+        ]
+        if operation\kind = 'transpose [
+            if key? descriptor 'transpose -> next: lrBackendCall view\device 'transpose @[working operation\axes]
+        ]
+        if operation\kind = 'slice [
+            if key? descriptor 'slice -> next: lrBackendCall view\device 'slice @[working operation\axis operation\start operation\count operation\step]
+        ]
+        if null? next [
+            if ownsWorking -> lrBackendCall view\device 'release @[working]
+            return null
+        ]
         if ownsWorking -> lrBackendCall view\device 'release @[working]
         working: next
         ownsWorking: true
@@ -396,7 +431,7 @@ lrTensorViewHostData: function [view][
     unless null? view\storageOwner -> rootData: lrBackendCall view\device 'download @[view\storageOwner\handle]
     if null? rootData -> rootData: new view\mutationState\data
     record: #[shape: new view\root\shape data: rootData]
-    loop view\operations 'operation -> record: lrSliceHostRecord record operation
+    loop view\operations 'operation -> record: lrApplyViewOperation record operation
     view\data: record\data
     view\dataVersion: view\mutationState\version
     return view\data
@@ -606,6 +641,43 @@ tensorFromBuffer: function [dims buffer][
     return lrMakeTensorTypedOn dims buffer\data buffer\device dtype
 ]
 
+lrMakeTensorView: function [source dims operation][
+    args: lrArgs 9
+    set args 0 source
+    set args 1 dims
+    set args 2 0
+    set args 3 0
+    set args 4 0
+    set args 5 1
+    set args 6 lrFreshBlock
+    set args 7 source\device
+    set args 8 source\dtype
+    result: to :learnTensorView args
+    set result 'shape new dims
+    set result 'data lrFreshBlock
+    root: source
+    operations: lrFreshBlock
+    owner: null
+    if is? :learnTensorView source [
+        root: source\root
+        operations: new source\operations
+        owner: source\storageOwner
+    ]
+    if is? :learnTensor source -> owner: lrTensorStorageOwner source
+    'operations ++ operation
+    set result 'root root
+    set result 'operations operations
+    set result 'storageOwner lrRetainStorageOwner owner
+    state: source\mutationState
+    if is? :learnTensorView source -> state: source\mutationState
+    set result 'mutationState state
+    set result 'nativeStorageOwner null
+    negativeOne: 0 - 1
+    set result 'nativeStorageVersion negativeOne
+    set result 'dataVersion negativeOne
+    return result
+]
+
 tensorSlice: function [value][
     callAttrs: attrs
     source: value
@@ -636,40 +708,8 @@ tensorSlice: function [value][
     unless and? [integer? sliceCount][and? [sliceCount >= 0][sliceCount =< sliceAvailable]] -> panic "learn: tensorSlice count is out of bounds"
     dims: new source\shape
     set dims axis sliceCount
-    args: lrArgs 9
-    set args 0 source
-    set args 1 dims
-    set args 2 axis
-    set args 3 start
-    set args 4 sliceCount
-    set args 5 step
-    set args 6 lrFreshBlock
-    set args 7 source\device
-    set args 8 source\dtype
-    result: to :learnTensorView args
-    set result 'shape new dims
-    set result 'data lrFreshBlock
-    root: source
-    operations: lrFreshBlock
-    owner: null
-    if is? :learnTensorView source [
-        root: source\root
-        operations: new source\operations
-        owner: source\storageOwner
-    ]
-    if is? :learnTensor source -> owner: lrTensorStorageOwner source
-    'operations ++ #[axis: axis start: start count: sliceCount step: step]
-    set result 'root root
-    set result 'operations operations
-    set result 'storageOwner lrRetainStorageOwner owner
-    state: source\mutationState
-    if is? :learnTensorView source -> state: source\mutationState
-    set result 'mutationState state
-    set result 'nativeStorageOwner null
-    negativeOne: 0 - 1
-    set result 'nativeStorageVersion negativeOne
-    set result 'dataVersion negativeOne
-    return result
+    operation: #[kind: 'slice axis: axis start: start count: sliceCount step: step]
+    return lrMakeTensorView source dims operation
 ]
 
 lrTensorViewRootIndices: function [view][
@@ -677,7 +717,7 @@ lrTensorViewRootIndices: function [view][
     count: lrCount view\root\shape
     if count > 0 [loop 0..(count - 1) 'position -> 'indices ++ position]
     record: #[shape: new view\root\shape data: indices]
-    loop view\operations 'operation -> record: lrSliceHostRecord record operation
+    loop view\operations 'operation -> record: lrApplyViewOperation record operation
     return record\data
 ]
 
@@ -720,14 +760,40 @@ assignTensor: function [target replacement][
     unless or? [is? :learnTensor target][is? :learnTensorView target] -> panic "learn: assignTensor expects a tensor or tensor view target"
     values: lrAssignmentValues target replacement
     if is? :learnTensor target -> return lrReplaceTensorData target values
+    indices: lrTensorViewRootIndices target
+    unless (size indices) = (size values) -> panic "learn: malformed mutable tensor view"
+    if empty? indices -> return target
+    descriptor: lrBackend target\device
+    if key? descriptor 'scatter [
+        if null? target\storageOwner -> panic "learn: cannot assign through a released tensor view"
+        root: target\root
+        owner: target\storageOwner
+        nextHandle: lrBackendCall target\device 'scatter @[owner\handle indices values]
+        previousHandle: owner\handle
+        owner\handle: nextHandle
+        owner\version: owner\version + 1
+        root\storage: nextHandle
+        target\mutationState\version: target\mutationState\version + 1
+        root\mutationVersion: target\mutationState\version
+        lrBackendCall target\device 'release @[previousHandle]
+        mirror: target\mutationState\data
+        if (size mirror) = (lrCount root\shape) [
+            nextMirror: new mirror
+            loop 0..((size indices) - 1) 'position -> set nextMirror indices\[position] values\[position]
+            set target\mutationState 'data nextMirror
+            root\data: new nextMirror
+        ] [
+            set target\mutationState 'data lrFreshBlock
+            root\data: lrFreshBlock
+        ]
+        return target
+    ]
     root: target\root
     rootData: new target\mutationState\data
     unless (size rootData) = (lrCount root\shape) [
         if null? target\storageOwner -> panic "learn: cannot assign through a released tensor view"
         rootData: lrBackendCall target\device 'download @[target\storageOwner\handle]
     ]
-    indices: lrTensorViewRootIndices target
-    unless (size indices) = (size values) -> panic "learn: malformed mutable tensor view"
     if not? empty? indices [loop 0..((size indices) - 1) 'position -> set rootData indices\[position] values\[position]]
     lrReplaceTensorData root rootData
     return target
@@ -1115,12 +1181,12 @@ avgPool2d: function [inputValue kernel][
 
 reshape: function [value dims][
     if is? :learnValue value -> return lrValueReshape value dims
-    source: lrAsTensor value
-    lrTensorHostData source
+    source: value
+    unless or? [is? :learnTensor source][is? :learnTensorView source] -> source: lrAsTensor source
     lrValidateShape dims
-    unless (lrCount dims) = (size source\data) ->
+    unless (lrCount dims) = (lrCount source\shape) ->
         panic ~"learn: cannot reshape |source\shape| to |dims|"
-    return lrMakeTensorLike dims source\data source
+    return lrMakeTensorView source dims #[kind: 'reshape dims: new dims]
 ]
 
 lrTransposeAxes: function [dims requestedAxes][
@@ -1151,31 +1217,12 @@ transpose: function [value][
     requestedAxes: null
     if key? callAttrs 'axes -> requestedAxes: callAttrs\axes
     if is? :learnValue value -> return lrValueTranspose value requestedAxes
-    source: lrAsTensor value
-    lrTensorHostData source
-    rank: size source\shape
+    source: value
+    unless or? [is? :learnTensor source][is? :learnTensorView source] -> source: lrAsTensor source
     axes: lrTransposeAxes source\shape requestedAxes
-
     outputShape: lrFreshBlock
     loop axes 'axis -> 'outputShape ++ source\shape\[axis]
-    data: lrFreshBlock
-    count: lrCount outputShape
-    if count > 0 [
-        loop 0..(count - 1) 'outputIndex [
-            outputCoordinates: lrCoordinates outputShape outputIndex
-            sourceCoordinates: lrArgs rank
-            if rank > 0 [
-                loop 0..(rank - 1) 'outputAxis [
-                    sourceAxis: axes\[outputAxis]
-                    coordinate: outputCoordinates\[outputAxis]
-                    set sourceCoordinates sourceAxis coordinate
-                ]
-            ]
-            sourceIndex: lrFlatIndex source\shape sourceCoordinates
-            'data ++ source\data\[sourceIndex]
-        ]
-    ]
-    return lrMakeTensorLike outputShape data source
+    return lrMakeTensorView source outputShape #[kind: 'transpose axes: new axes]
 ]
 
 tensorSum: function [value][

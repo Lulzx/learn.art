@@ -31,7 +31,8 @@
 - v0.29: explicit float32/float64 identity, deterministic promotion, and lazy read-only slice views.
 - v0.30: backend-native strided view execution and reference-counted device storage.
 - v0.31: mutable view assignment with overlap-safe snapshots and atomic copy-and-swap device updates.
+- v0.32: backend-native scatter assignment and zero-copy reshape/transpose views.
 
 ## Next
 
-The next coherent milestone is backend-native scatter assignment and zero-copy reshape/transpose views.
+The next coherent milestone is compiling per-node shape inference and a fused strided view iterator, or higher-order reverse-mode operations.

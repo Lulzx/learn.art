@@ -130,7 +130,7 @@ suite "dense tensors" [
         assert -> [4.0 6.0 12.0 14.0] = summed\data
         assert -> [1.5 3.5 5.5 7.5] = averaged\data
         assert -> [2 2 2] = shape permuted
-        assert -> [1.0 3.0 5.0 7.0 2.0 4.0 6.0 8.0] = permuted\data
+        assert -> [1.0 3.0 5.0 7.0 2.0 4.0 6.0 8.0] = tensorData permuted
     ]
 
     test "indexes by coordinate without exposing a view" [
@@ -255,6 +255,41 @@ suite "dense tensors" [
         assert -> badShape?
         assert -> badDtype?
         assert -> badTarget?
+    ]
+
+    test "creates lazy reshape and transpose views" [
+        source: tensor [1 2 3 4 5 6]
+        matrix: reshape source [2 3]
+        assert -> is? :learnTensorView matrix
+        assert -> [2 3] = shape matrix
+        assert -> not? hostMaterialized? matrix
+        assert -> [1.0 2.0 3.0 4.0 5.0 6.0] = tensorData matrix
+        assert -> hostMaterialized? matrix
+        transposed: transpose matrix
+        assert -> is? :learnTensorView transposed
+        assert -> [3 2] = shape transposed
+        assert -> [1.0 4.0 2.0 5.0 3.0 6.0] = tensorData transposed
+        chained: transpose.axes: [1 0] (reshape source [3 2])
+        assert -> [2 3] = shape chained
+        assert -> [1.0 3.0 5.0 2.0 4.0 6.0] = tensorData chained
+        row: reshape source [6]
+        assert -> not? hostMaterialized? row
+        assert -> [1.0 2.0 3.0 4.0 5.0 6.0] = tensorData row
+    ]
+
+    test "assigns through reshape and transpose views" [
+        source: tensor [1 2 3 4]
+        view: transpose (reshape source [2 2])
+        assignTensor view 9.0
+        assert -> [9.0 9.0 9.0 9.0] = tensorData source
+        target: tensor [[1 2] [3 4]]
+        corner: transpose target
+        assignTensor corner (tensor [[10 20] [30 40]])
+        assert -> [10.0 30.0 20.0 40.0] = tensorData target
+        vector: tensor [10 20 30 40]
+        column: reshape vector [4 1]
+        assignTensor column (tensor [[7] [8] [9] [6]])
+        assert -> [7.0 8.0 9.0 6.0] = tensorData vector
     ]
 
     test "validates slice bounds and dtype names" [

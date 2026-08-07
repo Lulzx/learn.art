@@ -135,4 +135,47 @@ suite "Metal backend" [
         releaseTensor gpu
         releaseMps artifact
     ]
+
+    test "assigns device views with backend-native scatter" [
+        source: tensor.device: 'mps [1 2 3 4 5]
+        target: tensorSlice.start: 1.count: 3 source
+        assignTensor target (tensor.device: 'mps [10 20 30])
+        assert -> [1.0 10.0 20.0 30.0 5.0] = tensorData source
+        releaseTensor target
+        releaseTensor source
+    ]
+
+    test "feeds zero-copy reshape and transpose views" [
+        source: tensor.device: 'mps [[1 2 3] [4 5 6]]
+        transposed: transpose source
+        assert -> [3 2] = shape transposed
+        assert -> not? hostMaterialized? transposed
+        reshaped: reshape transposed [6]
+        assert -> [6] = shape reshaped
+        assert -> not? hostMaterialized? reshaped
+        model: graph [
+            x: lrInputFrom tensor.zeros [6]
+            doubled: x * 2.0
+        ]
+        data: graphData model
+        schedule: scheduleGraph data 'doubled
+        artifact: compileMps schedule
+        result: executeMps.with: #[x: reshaped] artifact
+        assert -> not? hostMaterialized? reshaped
+        assert -> [2.0 8.0 4.0 10.0 6.0 12.0] = tensorData result
+        releaseTensor result
+        releaseTensor reshaped
+        releaseTensor transposed
+        releaseTensor source
+        releaseMps artifact
+    ]
+
+    test "assigns through a transpose view on the device" [
+        source: tensor.device: 'mps [[1 2] [3 4]]
+        view: transpose source
+        assignTensor view (tensor.device: 'mps [[10 20] [30 40]])
+        assert -> [10.0 30.0 20.0 40.0] = tensorData source
+        releaseTensor view
+        releaseTensor source
+    ]
 ]

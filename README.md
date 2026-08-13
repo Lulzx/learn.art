@@ -187,4 +187,4 @@ arturo examples/compiled-mps-training.art
 arturo examples/mnist-mps.art
 ```
 
-The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Backend-native scatter assignment and zero-copy reshape/transpose views remain outside the current milestone.
+The MPS adapter is optional and the default `src/learn.art` entry remains CPU-only and portable. Backend-native scatter assignment and zero-copy reshape/transpose views are available when the optional adapter is enabled.

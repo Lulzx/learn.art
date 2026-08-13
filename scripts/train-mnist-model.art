@@ -1,0 +1,34 @@
+;===========================================================
+; train-mnist-model.art
+;
+; Train the 784-128-10 MNIST MLP once on the MPS backend and
+; save its weights as native float32 tensors under data/model/
+; for examples/mnist-paint.art. The paint app only loads these
+; weights and runs inference; it never trains.
+;
+; Run from the repo root:
+;   arturo scripts/train-mnist-model.art
+;===========================================================
+
+import relative {../src/metal-training}!
+
+do [
+    unless and? [exists? "data/model"][not? file? "data/model"] -> panic "learn: create data/model before training"
+
+    dataset: loadMpsMnist "data/mnist"
+    trainer: mpsMlpTrainer.rate: 0.01.seed: 7 100 784 128 10
+
+    history: trainMpsMnist.epochs: 1 trainer dataset
+    accuracy: evaluateMpsMnist trainer dataset
+    print ["test accuracy:" accuracy "loss:" last history\epochs]
+
+    loop ['firstWeight 'firstBias 'secondWeight 'secondBias] 'name [
+        tensor: trainer\state\[name]
+        path: join.with: "" @["data/model/" (to :string name) ".bin"]
+        metalSave tensor path
+        print ["saved" path]
+    ]
+
+    releaseMpsMlpTrainer trainer
+    releaseMpsMnist dataset
+]

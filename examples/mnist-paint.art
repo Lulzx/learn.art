@@ -1,0 +1,288 @@
+;===========================================================
+; mnist-paint.art
+;
+; MNIST digit recognizer desklet, adapted from raylib.art's
+; examples/paint.art. Draw a digit on the left canvas; the
+; 784-128-10 MLP (trained by scripts/train-mnist-model.art and
+; cached under data/model/) classifies it and the prediction
+; with per-digit probabilities is shown on the right.
+;
+; The app never trains: it loads the cached float32 weights and
+; runs inference on the MPS backend.
+;
+; Performance: raylib FFI crossings cost ~1.6ms each, so the
+; frame makes almost no raw raylib calls. Input polls use the
+; direct fast-path bindings, the whole frame is drawn in one
+; adapter_batch crossing (texture blits + dynamic overlay), and
+; predictions are throttled to a few per second mid-stroke.
+;
+; Run from the repo root:
+;   arturo examples/mnist-paint.art
+;===========================================================
+
+import relative {../src/metal-training}!
+import "raylib"
+
+do [
+    ; ---------- layout ----------
+    cellSize: 10
+    cells: 28
+    gridPx: cells * cellSize                     ; 280
+    canvasX: 60
+    canvasY: 100
+    windowW: 960
+    windowH: 600
+
+    bgColor: [26 28 38]
+    panelColor: [38 42 56]
+    inkColor: [235 235 240]
+    dimColor: [140 145 165]
+    barColor: [60 66 86]
+    accentColor: [245 196 80]
+
+    ; ---------- raylib batch helpers ----------
+    blitTarget: "raylib::DrawTextureRec|void|Texture{id:u32;width:i32;height:i32;mipmaps:i32;format:i32},Rectangle{x:f32;y:f32;width:f32;height:f32},Vector2{x:f32;y:f32},Color{r:u8;g:u8;b:u8;a:u8}"
+    rectTarget: "raylib::DrawRectangle|void|i32,i32,i32,i32,Color{r:u8;g:u8;b:u8;a:u8}"
+    textTarget: "raylib::DrawText|void|str,i32,i32,i32,Color{r:u8;g:u8;b:u8;a:u8}"
+
+    blitArgs: function [texture rectx recty][
+        return rlEncodeArgs ["Texture" "Rectangle" "Vector2" "Color"] @[texture rectx recty WHITE]
+    ]
+    rectArgs: function [x y w h color][
+        return rlEncodeArgs ["i32" "i32" "i32" "i32" "Color"] @[x y w h color]
+    ]
+    textArgs: function [text x y size color][
+        return rlEncodeArgs ["str" "i32" "i32" "i32" "Color"] @[text x y size color]
+    ]
+
+    ; ---------- model (load once, never train) ----------
+    dimsBy: #[firstWeight: [784 128] firstBias: [128] secondWeight: [128 10] secondBias: [10]]
+    modelNames: ['firstWeight 'firstBias 'secondWeight 'secondBias]
+
+    initWindow windowW windowH "MNIST paint"
+    setTargetFPS 60
+
+    beginDrawing
+    clearBackground bgColor
+    drawText "loading model..." 360 280 24 LIGHTGRAY
+    endDrawing
+
+    trainer: mpsMlpTrainer.rate: 0.01.seed: 1 1 784 128 10
+    loop modelNames 'name [
+        sourcePath: join.with: "" @["data/model/" (to :string name) ".bin"]
+        unless file? sourcePath -> panic ~"mnist-paint: missing |sourcePath|; run arturo scripts/train-mnist-model.art"
+        metalRelease trainer\state\[name]
+        set trainer\state name (metalTensorFromFile lrMetalState\runtime sourcePath dimsBy\[name])
+    ]
+
+    ; ---------- textures ----------
+    uiTexture: loadRenderTexture windowW windowH
+    canvasTexture: loadRenderTexture gridPx gridPx
+
+    ; static chrome, built once into a texture
+    uiScript: rlBatchBegin
+    uiScript: rlBatchAdd uiScript rectTarget (rectArgs 0 0 windowW windowH bgColor)
+    uiScript: rlBatchAdd uiScript textTarget (textArgs "Draw a digit" canvasX 58 20 LIGHTGRAY)
+    uiScript: rlBatchAdd uiScript rectTarget (rectArgs (canvasX - 4) (canvasY - 4) (gridPx + 8) (gridPx + 8) panelColor)
+    uiScript: rlBatchAdd uiScript textTarget (textArgs "Model output" 500 58 20 LIGHTGRAY)
+    uiScript: rlBatchAdd uiScript rectTarget (rectArgs 500 92 380 150 panelColor)
+    uiScript: rlBatchAdd uiScript textTarget (textArgs "probabilities" 500 262 18 dimColor)
+    row: 0
+    while [row < 10][
+        uiScript: rlBatchAdd uiScript textTarget (textArgs (to :string row) 500 (288 + row * 26) 18 LIGHTGRAY)
+        uiScript: rlBatchAdd uiScript rectTarget (rectArgs 530 (292 + row * 26) 240 12 barColor)
+        row: row + 1
+    ]
+    uiScript: rlBatchAdd uiScript textTarget (textArgs "drag to draw    C clear    Esc quit    model: 784-128-10 MNIST MLP (cached in data/model)" 60 552 16 dimColor)
+
+    beginTextureMode uiTexture
+    rlBatch uiScript
+    endTextureMode
+
+    beginTextureMode canvasTexture
+    clearBackground BLACK
+    endTextureMode
+
+    ; ---------- shared state ----------
+    S: #[hasInk: false changedSincePredict: false predicted: null probabilityValues: array.of: 10 0.0]
+
+    grid: array.of: 784 0.0
+    pendingMarks: array.of: 784 false
+    pendingCells: []
+    brushRadius: 1.4
+
+    heldPrev: false
+    drawing: false
+    forcePredict: false
+    frameCount: 0
+    lastPredictFrame: (neg 100)
+    prevFx: 0.0
+    prevFy: 0.0
+
+    ; ---------- helpers ----------
+    stamp: function [fx fy][
+        minCellX: max @[0 (floor (fx - brushRadius))]
+        maxCellX: min @[(cells - 1) (floor (fx + brushRadius))]
+        minCellY: max @[0 (floor (fy - brushRadius))]
+        maxCellY: min @[(cells - 1) (floor (fy + brushRadius))]
+        radiusSq: brushRadius * brushRadius
+        cy: minCellY
+        while [cy =< maxCellY][
+            cx: minCellX
+            while [cx =< maxCellX][
+                dx: (to :floating cx) + 0.5 - fx
+                dy: (to :floating cy) + 0.5 - fy
+                ink: 1.0 - ((dx * dx) + (dy * dy)) / radiusSq
+                if ink > 0.0 [
+                    cellAt: (cy * cells) + cx
+                    if grid\[cellAt] < ink [
+                        set grid cellAt ink
+                        set S 'hasInk true
+                        set S 'changedSincePredict true
+                        unless pendingMarks\[cellAt] [
+                            set pendingMarks cellAt true
+                            'pendingCells ++ cellAt
+                        ]
+                    ]
+                ]
+                cx: cx + 1
+            ]
+            cy: cy + 1
+        ]
+    ]
+
+    clearCanvas: function [][
+        pos: 0
+        while [pos < 784][ set grid pos 0.0 pos: pos + 1 ]
+        pos: 0
+        while [pos < 784][ set pendingMarks pos false pos: pos + 1 ]
+        set S 'hasInk false
+        set S 'changedSincePredict false
+        set S 'predicted null
+        set S 'probabilityValues (array.of: 10 0.0)
+        beginTextureMode canvasTexture
+        clearBackground BLACK
+        endTextureMode
+    ]
+
+    updatePrediction: function [][
+        features: tensor @[grid]
+        logits: mpsMlpPredict trainer features
+        probabilities: softmax logits
+        prediction: classPrediction logits
+        set S 'predicted (to :integer prediction\data\0)
+        set S 'probabilityValues (new probabilities\data)
+    ]
+
+    ; ---------- main loop ----------
+    while [not? windowShouldClose?][
+        frameCount: frameCount + 1
+
+        ; input (direct fast-path bindings)
+        if (isKeyPressed? KEY_C) [
+            clearCanvas
+            pendingCells: []
+        ]
+
+        held: isMouseButtonDown? MOUSE_BUTTON_LEFT
+        pressed: and? [held][not? heldPrev]
+        released: and? [not? held][heldPrev]
+        heldPrev: held
+
+        ; fetch the pointer only when it matters (spares an adapter call when idle)
+        needMouse: or? [pressed][and? [drawing][held]]
+        if needMouse [
+            mouse: getMousePosition
+            fx: (mouse\x - (to :floating canvasX)) / (to :floating cellSize)
+            fy: (mouse\y - (to :floating canvasY)) / (to :floating cellSize)
+        ]
+
+        if pressed [ drawing: true forcePredict: false prevFx: fx prevFy: fy ]
+        if released [ drawing: false forcePredict: true ]
+
+        ; only stamp once the pointer actually moves: a bare click draws nothing
+        if drawing [
+            if held [
+                if and? [and? [fx >= 0.0][fx < (to :floating cells)]][and? [fy >= 0.0][fy < (to :floating cells)]] [
+                    if not? and? [fx = prevFx][fy = prevFy] [
+                        dx: fx - prevFx
+                        dy: fy - prevFy
+                        cheb: max @[abs dx abs dy]
+                        steps: to :integer ((cheb / 0.2) + 1.0)
+                        k: 0
+                        while [k =< steps][
+                            t: (to :floating k) / (to :floating steps)
+                            stamp (prevFx + dx * t) (prevFy + dy * t)
+                            k: k + 1
+                        ]
+                    ]
+                ]
+                prevFx: fx
+                prevFy: fy
+            ]
+        ]
+
+        ; flush pending cells into the canvas texture (one batch)
+        if not? empty? pendingCells [
+            script: rlBatchBegin
+            n: 0
+            while [n < size pendingCells][
+                cellAt: pendingCells\[n]
+                cx: cellAt % cells
+                cy: (cellAt - cx) / cells
+                level: to :integer (grid\[cellAt] * 255.0)
+                script: rlBatchAdd script rectTarget (rectArgs (cx * cellSize) (cy * cellSize) cellSize cellSize [level level level])
+                set pendingMarks cellAt false
+                n: n + 1
+            ]
+            beginTextureMode canvasTexture
+            rlBatch script
+            endTextureMode
+            pendingCells: []
+        ]
+
+        ; prediction cadence: on release, and at most ~every 6 frames mid-stroke
+        if or? [forcePredict][and? [S\changedSincePredict][(frameCount - lastPredictFrame) >= 6]] [
+            if S\hasInk [
+                updatePrediction
+            ]
+            if not? S\hasInk [
+                set S 'predicted null
+                set S 'probabilityValues (array.of: 10 0.0)
+            ]
+            lastPredictFrame: frameCount
+            set S 'changedSincePredict false
+            forcePredict: false
+        ]
+
+        ; render: one batched crossing for everything
+        beginDrawing
+        script: rlBatchBegin
+        script: rlBatchAdd script blitTarget (blitArgs uiTexture\texture #[x: 0.0 y: 0.0 width: 960.0 height: (neg 600.0)] #[x: 0.0 y: 0.0])
+        script: rlBatchAdd script blitTarget (blitArgs canvasTexture\texture #[x: 0.0 y: 0.0 width: 280.0 height: (neg 280.0)] #[x: 60.0 y: 100.0])
+        if not? null? S\predicted [
+            script: rlBatchAdd script textTarget (textArgs (to :string S\predicted) 535 86 116 accentColor)
+            script: rlBatchAdd script textTarget (textArgs (join.with: "" @["confidence  " (to :string (to :integer (S\probabilityValues\[S\predicted] * 100.0))) "%"]) 680 132 20 dimColor)
+        ]
+        if null? S\predicted [
+            script: rlBatchAdd script textTarget (textArgs "--" 585 100 116 dimColor)
+        ]
+        row: 0
+        while [row < 10][
+            probability: S\probabilityValues\[row]
+            fillWidth: to :integer (probability * 240.0)
+            if fillWidth > 0 [
+                fillColor: (S\predicted = row)? -> accentColor -> inkColor
+                script: rlBatchAdd script rectTarget (rectArgs 530 (292 + row * 26) fillWidth 12 fillColor)
+            ]
+            row: row + 1
+        ]
+        rlBatch script
+        endDrawing
+    ]
+
+    releaseMpsMlpTrainer trainer
+    unloadRenderTexture canvasTexture
+    unloadRenderTexture uiTexture
+    closeWindow
+]

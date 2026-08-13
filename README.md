@@ -164,6 +164,24 @@ arturo examples/mnist-mps.art
 
 The downloader uses the [CVDF MNIST mirror](https://github.com/cvdfoundation/mnist) and validates the four gzip archives before extraction.
 
+## MNIST paint desklet
+
+`examples/mnist-paint.art` is a desktop digit-recognizer app (adapted from [raylib.art](https://github.com/Lulzx/raylib.art)'s `examples/paint.art`): drag to draw on the left canvas, and the 784–128–10 MLP classifies the 28×28 grid live on the right, with per-digit probability bars. The app never trains — it loads the cached float32 weights from `data/model/` (generated once by `scripts/train-mnist-model.art`) and runs inference on the MPS backend.
+
+It uses the optional [raylib.art](https://github.com/Lulzx/raylib.art) bindings (submodule `vendor/raylib`) on top of the shared [arturo-ffi](https://github.com/Lulzx/arturo-ffi) FFI adapter (submodule `vendor/arturo-ffi`). The root `raylib` and `arturo-ffi` symlinks make `import "raylib"` and the adapter resolve from the repo root. Build the vendored adapters once, then run from the repo root:
+
+```sh
+make -C vendor/arturo-ffi native      # needs libffi (brew install libffi)
+make -C vendor/raylib native          # needs raylib 6.0 + libffi (brew install raylib libffi)
+arturo scripts/train-mnist-model.art  # trains the MLP and saves data/model/*.bin
+arturo examples/mnist-paint.art       # draw a digit
+```
+
+The bindings were extended for this app (see also the `adapter_batch` addition in [arturo-ffi](https://github.com/Lulzx/arturo-ffi), consumed by all three of raylib.art, gdal.art and this repo):
+
+- **Direct fast path** — `vendor/raylib/tools/generate.art` emits `call.external` bindings directly against raylib for functions with only integer arguments and `bool`/`void` results (input polling, `beginDrawing`/`endDrawing`, `setTargetFPS`, ...), bypassing the generic FFI adapter. Direct calls are ~63–99 µs vs ~1.6 ms through the adapter, which dominates the frame loop.
+- **`adapter_batch`** — the arturo-ffi adapter gained a batched entry point that executes many draw calls in a single crossing (one target/args pair per line). `rlBatch`/`rlBatchBegin`/`rlBatchAdd` in `vendor/raylib/src/core.art` build such scripts; the desklet renders its whole frame in one batch.
+
 ## Development
 
 The package requires Arturo 0.10.0 and uses [unitt](https://github.com/RickBarretto/unitt):

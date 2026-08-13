@@ -25,7 +25,7 @@ do [
     unless and? [exists? "data/model"][not? file? "data/model"] -> panic "learn: create data/model before training"
 
     epochsThisRun: 10
-    rate: 0.01
+    rate: 0.002
     seed: 7
     batchSize: 100
     hiddenSize: 256

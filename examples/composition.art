@@ -22,7 +22,7 @@ iterator: batcher.size: 2.seed: 5 features targets
 freezeGroup model "encoder"
 frozenHistory: train.epochs: 40 model optimizer iterator
 unfreezeGroup model "encoder"
-fineTuneHistory: train.epochs: 120 model optimizer iterator
+fineTuneHistory: train.epochs: 60 model optimizer iterator
 
 evalMode model
 forward.with: #[x: features y: targets] model

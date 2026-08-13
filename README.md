@@ -166,14 +166,15 @@ The downloader uses the [CVDF MNIST mirror](https://github.com/cvdfoundation/mni
 
 ## MNIST paint desklet
 
-`examples/mnist-paint.art` is a desktop digit-recognizer app (adapted from [raylib.art](https://github.com/Lulzx/raylib.art)'s `examples/paint.art`): drag to draw on the left canvas, and the 784–128–10 MLP classifies the 28×28 grid live on the right, with per-digit probability bars. The app never trains — it loads the cached float32 weights from `data/model/` (generated once by `scripts/train-mnist-model.art`) and runs inference on the MPS backend.
+`examples/mnist-paint.art` is a desktop digit-recognizer app (adapted from [raylib.art](https://github.com/Lulzx/raylib.art)'s `examples/paint.art`): drag to draw on the left canvas, and the 784–256–10 MLP classifies the 28×28 grid live on the right, with per-digit probability bars (~98% test accuracy). The app never trains — it loads the cached float32 weights from `data/model/` and runs inference on the MPS backend.
 
 It uses the optional [raylib.art](https://github.com/Lulzx/raylib.art) bindings (submodule `vendor/raylib`) on top of the shared [arturo-ffi](https://github.com/Lulzx/arturo-ffi) FFI adapter (submodule `vendor/arturo-ffi`). The root `raylib` and `arturo-ffi` symlinks make `import "raylib"` and the adapter resolve from the repo root. Build the vendored adapters once, then run from the repo root:
 
 ```sh
 make -C vendor/arturo-ffi native      # needs libffi (brew install libffi)
 make -C vendor/raylib native          # needs raylib 6.0 + libffi (brew install raylib libffi)
-arturo scripts/train-mnist-model.art  # trains the MLP and saves data/model/*.bin
+make -C vendor/metal                  # native Metal runtime (arturo scripts/build.art)
+arturo scripts/train-mnist-model.art  # +10 training epochs, resumes from data/model/*
 arturo examples/mnist-paint.art       # draw a digit
 ```
 
@@ -181,6 +182,13 @@ The bindings were extended for this app (see also the `adapter_batch` addition i
 
 - **Direct fast path** — `vendor/raylib/tools/generate.art` emits `call.external` bindings directly against raylib for functions with only integer arguments and `bool`/`void` results (input polling, `beginDrawing`/`endDrawing`, `setTargetFPS`, ...), bypassing the generic FFI adapter. Direct calls are ~63–99 µs vs ~1.6 ms through the adapter, which dominates the frame loop.
 - **`adapter_batch`** — the arturo-ffi adapter gained a batched entry point that executes many draw calls in a single crossing (one target/args pair per line). `rlBatch`/`rlBatchBegin`/`rlBatchAdd` in `vendor/raylib/src/core.art` build such scripts; the desklet renders its whole frame in one batch.
+
+### Arturo FFI stability notes
+
+Two Arturo 0.10.0 `call.external` quirks affect this app (and gdal.art/raylib.art):
+
+- The VM `dlopen`/`dlclose`s the target library on **every** foreign call. Re-mapping a user dylib each time leaks ~22 KB/call and crashes the VM within a couple of minutes. The desklet holds one `dlopen` reference on `libarturo_ffi` and `libarturo_metal` at startup so they stay resident.
+- Passing large CSV payloads as string arguments to the Metal dylib corrupts the VM after repeated calls. The app therefore builds inference directly as a Metal graph (no `mpsMlpTrainer`), uploads the 28×28 grid through the uint8 byte-file path, and the trainer uploads its initial weights through a whitespace-separated file (`am_tensor_from_csv_file`) rather than the CSV string path. Training also runs in ~10-epoch segments per process (`scripts/train-mnist-model.art`), resuming from the saved weights, because a single long Metal run hits the same limit.
 
 ## Development
 

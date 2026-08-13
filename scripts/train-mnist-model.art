@@ -1,26 +1,53 @@
 ;===========================================================
 ; train-mnist-model.art
 ;
-; Train the 784-128-10 MNIST MLP once on the MPS backend and
-; save its weights as native float32 tensors under data/model/
-; for examples/mnist-paint.art. The paint app only loads these
+; Train the 784-128-10 MNIST MLP on the MPS backend and save its
+; weights as native float32 tensors under data/model/ for
+; examples/mnist-paint.art. The paint app only loads these
 ; weights and runs inference; it never trains.
 ;
-; Run from the repo root:
-;   arturo scripts/train-mnist-model.art
+; Training runs in 10-epoch segments that resume from the saved
+; weights. This Arturo build's call.external corrupts the VM after
+; roughly 8-13 epochs of Metal calls per process, so run this
+; script once per segment to accumulate epochs:
+;
+;   arturo scripts/train-mnist-model.art     # +10 epochs, saves
+;
+; Run it again to train 10 more epochs from the checkpoint.
 ;===========================================================
 
 import relative {../src/metal-training}!
 
 do [
+    ; Keep the Metal dylib resident (see examples/mnist-paint.art).
+    call.external: "/usr/lib/libSystem.dylib".expect: :integer 'dlopen @["vendor/metal/build/libarturo_metal.dylib" 2]
+
     unless and? [exists? "data/model"][not? file? "data/model"] -> panic "learn: create data/model before training"
 
-    dataset: loadMpsMnist "data/mnist"
-    trainer: mpsMlpTrainer.rate: 0.01.seed: 7 100 784 128 10
+    epochsThisRun: 10
+    rate: 0.01
+    seed: 7
+    batchSize: 100
+    hiddenSize: 256
+    dimsBy: #[firstWeight: [784 256] firstBias: [256] secondWeight: [256 10] secondBias: [10]]
 
-    history: trainMpsMnist.epochs: 1 trainer dataset
+    dataset: loadMpsMnist "data/mnist"
+    trainer: mpsMlpTrainer.rate: rate.seed: seed batchSize 784 hiddenSize 10
+
+    loaded: false
+    loop ['firstWeight 'firstBias 'secondWeight 'secondBias] 'name [
+        path: join.with: "" @["data/model/" (to :string name) ".bin"]
+        if file? path [
+            metalRelease trainer\state\[name]
+            set trainer\state name (metalTensorFromFile lrMetalState\runtime path dimsBy\[name])
+            loaded: true
+        ]
+    ]
+
+    history: trainMpsMnist.epochs: epochsThisRun trainer dataset
+    lastRecord: last history\epochs
     accuracy: evaluateMpsMnist trainer dataset
-    print ["test accuracy:" accuracy "loss:" last history\epochs]
+    print ["epochs this run:" lastRecord\epoch "loss:" lastRecord\loss "test accuracy:" accuracy]
 
     loop ['firstWeight 'firstBias 'secondWeight 'secondBias] 'name [
         tensor: trainer\state\[name]

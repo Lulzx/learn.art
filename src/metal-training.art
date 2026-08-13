@@ -13,12 +13,25 @@ define :learnMpsMnist [
 lrMpsInitialParameter: function [dims kind seed][
     spec: initializer.seed: seed kind
     value: initializeTensor spec dims
-    return lrMetalUpload value\shape (lrTensorHostData value)
+    return lrMpsUploadFromHost value\shape (lrTensorHostData value)
 ]
 
 lrMpsInitialZeros: function [dims][
     value: tensor.zeros dims
-    return lrMetalUpload value\shape (lrTensorHostData value)
+    return lrMpsUploadFromHost value\shape (lrTensorHostData value)
+]
+
+; Upload host data via a whitespace-separated temp file. Passing large
+; CSV payloads as call.external string args (the am_tensor_create path)
+; corrupts the Arturo VM after repeated calls, so large initial weights
+; go through am_tensor_from_csv_file instead, which is stable.
+lrMpsUploadFromHost: function [dims data][
+    text: join.with: " " map data 'item -> to :string item
+    write text "/tmp/learn-initial.txt"
+    dimsText: join.with: "," map dims 'dim -> to :string dim
+    path: dimsText ++ "|/tmp/learn-initial.txt"
+    handle: metalCheckHandle (metalNativeInteger 'am_tensor_from_csv_file @[lrMetalState\runtime\handle path]) "tensor upload"
+    return metalWrap handle dims lrMetalState\runtime
 ]
 
 lrMpsMlpTrainingProgram: function [batchSize inputSize hiddenSize classCount][

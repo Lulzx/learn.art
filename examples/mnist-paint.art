@@ -24,6 +24,13 @@ import relative {../src/metal-training}!
 import "raylib"
 
 do [
+    ; Keep the FFI adapter and Metal dylib resident: Arturo's call.external
+    ; dlopen/dlclose's the target library on every call, and re-mapping
+    ; these user dylibs each time leaks memory (~22KB/call) and eventually
+    ; crashes the VM. One held dlopen reference prevents the unload.
+    call.external: "/usr/lib/libSystem.dylib".expect: :integer 'dlopen @["arturo-ffi/native/libarturo_ffi.dylib" 2]
+    call.external: "/usr/lib/libSystem.dylib".expect: :integer 'dlopen @["vendor/metal/build/libarturo_metal.dylib" 2]
+
     ; ---------- layout ----------
     cellSize: 10
     cells: 28
@@ -56,9 +63,10 @@ do [
     ]
 
     ; ---------- model (load once, never train) ----------
-    dimsBy: #[firstWeight: [784 128] firstBias: [128] secondWeight: [128 10] secondBias: [10]]
-    modelNames: ['firstWeight 'firstBias 'secondWeight 'secondBias]
-
+    ; The inference MLP is built directly as a Metal graph and the
+    ; cached float32 weights are loaded from binary files. We avoid
+    ; mpsMlpTrainer here: its constructor uploads the random initial
+    ; weights as large CSV strings, which corrupts the Arturo VM.
     initWindow windowW windowH "MNIST paint"
     setTargetFPS 60
 
@@ -67,13 +75,23 @@ do [
     drawText "loading model..." 360 280 24 LIGHTGRAY
     endDrawing
 
-    trainer: mpsMlpTrainer.rate: 0.01.seed: 1 1 784 128 10
-    loop modelNames 'name [
-        sourcePath: join.with: "" @["data/model/" (to :string name) ".bin"]
-        unless file? sourcePath -> panic ~"mnist-paint: missing |sourcePath|; run arturo scripts/train-mnist-model.art"
-        metalRelease trainer\state\[name]
-        set trainer\state name (metalTensorFromFile lrMetalState\runtime sourcePath dimsBy\[name])
-    ]
+    inferenceGraph: metalGraph lrMetalState\runtime
+    gFeatures: metalGraphInput inferenceGraph 'features @[1 784]
+    gFirstWeight: metalGraphInput inferenceGraph 'firstWeight @[784 256]
+    gFirstBias: metalGraphInput inferenceGraph 'firstBias @[256]
+    gSecondWeight: metalGraphInput inferenceGraph 'secondWeight @[256 10]
+    gSecondBias: metalGraphInput inferenceGraph 'secondBias @[10]
+    gProj1: metalGraphMatmul gFeatures gFirstWeight
+    gShift1: metalGraphAdd gProj1 gFirstBias
+    gHidden: metalGraphRelu gShift1
+    gProj2: metalGraphMatmul gHidden gSecondWeight
+    gLogits: metalGraphAdd gProj2 gSecondBias
+    inferenceProgram: metalCompile inferenceGraph @[gLogits]
+
+    firstWeightT: metalTensorFromFile lrMetalState\runtime "data/model/firstWeight.bin" [784 256]
+    firstBiasT: metalTensorFromFile lrMetalState\runtime "data/model/firstBias.bin" [256]
+    secondWeightT: metalTensorFromFile lrMetalState\runtime "data/model/secondWeight.bin" [256 10]
+    secondBiasT: metalTensorFromFile lrMetalState\runtime "data/model/secondBias.bin" [10]
 
     ; ---------- textures ----------
     uiTexture: loadRenderTexture windowW windowH
@@ -93,7 +111,7 @@ do [
         uiScript: rlBatchAdd uiScript rectTarget (rectArgs 530 (292 + row * 26) 240 12 barColor)
         row: row + 1
     ]
-    uiScript: rlBatchAdd uiScript textTarget (textArgs "drag to draw    C clear    Esc quit    model: 784-128-10 MNIST MLP (cached in data/model)" 60 552 16 dimColor)
+    uiScript: rlBatchAdd uiScript textTarget (textArgs "drag to draw    C clear    Esc quit    model: 784-256-10 MNIST MLP, 98% test accuracy (data/model)" 60 552 16 dimColor)
 
     beginTextureMode uiTexture
     rlBatch uiScript
@@ -166,8 +184,22 @@ do [
     ]
 
     updatePrediction: function [][
-        features: tensor @[grid]
-        logits: mpsMlpPredict trainer features
+        ; Serialize the grid as uint8 and upload via the byte-file path.
+        ; The CSV upload path (lrMetalUpload -> am_tensor_create) corrupts
+        ; the Arturo VM after repeated calls in this build.
+        byteText: ""
+        pos: 0
+        while [pos < 784][
+            byteText: byteText ++ to :char (to :integer (grid\[pos] * 255.0))
+            pos: pos + 1
+        ]
+        write byteText "/tmp/learn-features.bin"
+        featuresTensor: metalTensorFromBytes.scale: (1.0 / 255.0) lrMetalState\runtime "/tmp/learn-features.bin" [1 784]
+        logitsResult: metalRun.with: #[features: featuresTensor firstWeight: firstWeightT firstBias: firstBiasT secondWeight: secondWeightT secondBias: secondBiasT] inferenceProgram
+        values: metalDownload logitsResult\0
+        metalRelease logitsResult\0
+        metalRelease featuresTensor
+        logits: lrMakeTensor [1 10] values
         probabilities: softmax logits
         prediction: classPrediction logits
         set S 'predicted (to :integer prediction\data\0)
@@ -241,8 +273,8 @@ do [
             pendingCells: []
         ]
 
-        ; prediction cadence: on release, and at most ~every 6 frames mid-stroke
-        if or? [forcePredict][and? [S\changedSincePredict][(frameCount - lastPredictFrame) >= 6]] [
+        ; prediction cadence: on release, and at most ~every 20 frames mid-stroke
+        if or? [forcePredict][and? [S\changedSincePredict][(frameCount - lastPredictFrame) >= 20]] [
             if S\hasInk [
                 updatePrediction
             ]
@@ -281,7 +313,11 @@ do [
         endDrawing
     ]
 
-    releaseMpsMlpTrainer trainer
+    metalRelease inferenceProgram
+    metalRelease firstWeightT
+    metalRelease firstBiasT
+    metalRelease secondWeightT
+    metalRelease secondBiasT
     unloadRenderTexture canvasTexture
     unloadRenderTexture uiTexture
     closeWindow

@@ -187,13 +187,16 @@ do [
         ; Serialize the grid as uint8 and upload via the byte-file path.
         ; The CSV upload path (lrMetalUpload -> am_tensor_create) corrupts
         ; the Arturo VM after repeated calls in this build.
-        byteText: ""
+        ; NB: build the bytes as a binary, not a string: Arturo's `to :char`
+        ; + string concatenation UTF-8-encodes values > 127, so a bright
+        ; stroke would write 2 bytes per cell and corrupt the 784-byte file.
+        bytes: []
         pos: 0
         while [pos < 784][
-            byteText: byteText ++ to :char (to :integer (grid\[pos] * 255.0))
+            'bytes ++ to :integer (grid\[pos] * 255.0)
             pos: pos + 1
         ]
-        write byteText "/tmp/learn-features.bin"
+        write (to :binary bytes) "/tmp/learn-features.bin"
         featuresTensor: metalTensorFromBytes.scale: (1.0 / 255.0) lrMetalState\runtime "/tmp/learn-features.bin" [1 784]
         logitsResult: metalRun.with: #[features: featuresTensor firstWeight: firstWeightT firstBias: firstBiasT secondWeight: secondWeightT secondBias: secondBiasT] inferenceProgram
         values: metalDownload logitsResult\0

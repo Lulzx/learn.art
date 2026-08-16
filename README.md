@@ -1,6 +1,6 @@
 # learn.art
 
-`learn` is differentiable programming as ordinary Arturo data. Version 0.32 adds backend-native scatter assignment for mutable views and zero-copy reshape/transpose views.
+`learn` is differentiable programming as ordinary Arturo data. Version 0.33 adds a desktop MNIST digit-recognizer desklet (`examples/mnist-paint.art`) built on the shared arturo-ffi/raylib.art bindings, running a 784–256–10 MLP on the MPS backend at ~98% test accuracy.
 
 ## Example
 
